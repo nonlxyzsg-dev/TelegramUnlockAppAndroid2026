@@ -231,9 +231,12 @@ public class ProxyEngine {
         }
 
         Long fu = failUntil.get(dcKey);
-        if (fu != null && now < fu) {
-            tcpFallback(client, in, out, dst, port, init);
-            return;
+        if (fu != null) {
+            if (now < fu) {
+                tcpFallback(client, in, out, dst, port, init);
+                return;
+            }
+            failUntil.remove(dcKey);
         }
 
         String[] domains = TgConstants.wsDomains(dc, isMedia);
@@ -246,7 +249,7 @@ public class ProxyEngine {
         if (ws == null) {
             for (String domain : domains) {
                 try {
-                    ws = RawWebSocket.connect(targetIp, domain, 10000);
+                    ws = RawWebSocket.connect(targetIp, domain, 5000);
                     allRedirects = false;
                     break;
                 } catch (RawWebSocket.WsRedirectException e) {
@@ -327,9 +330,12 @@ public class ProxyEngine {
         }
 
         Long fu = failUntil.get(dcKey);
-        if (fu != null && now < fu) {
-            tcpFallback(client, in, out, dst, port, init);
-            return;
+        if (fu != null) {
+            if (now < fu) {
+                tcpFallback(client, in, out, dst, port, init);
+                return;
+            }
+            failUntil.remove(dcKey);
         }
 
         String[] domains = TgConstants.wsDomains(dc, isMedia);
@@ -342,7 +348,7 @@ public class ProxyEngine {
         if (ws == null) {
             for (String domain : domains) {
                 try {
-                    ws = RawWebSocket.connect(targetIp, domain, 10000);
+                    ws = RawWebSocket.connect(targetIp, domain, 5000);
                     allRedirects = false;
                     break;
                 } catch (RawWebSocket.WsRedirectException e) {
@@ -391,9 +397,11 @@ public class ProxyEngine {
             remote.setTcpNoDelay(true);
             remote.setKeepAlive(true);
         } catch (Exception e) {
-            out.write(socks5Reply(5));
-            out.flush();
-            client.close();
+            try {
+                out.write(socks5Reply(5));
+                out.flush();
+            } catch (Exception ignored) {}
+            try { client.close(); } catch (Exception ignored) {}
             return;
         }
 
