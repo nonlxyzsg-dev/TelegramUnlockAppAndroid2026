@@ -1,63 +1,86 @@
 <div align="center">
   <img src="https://i.postimg.cc/wxDWc2jz/1774128022158-3.jpg" width="100%" alt="TG Proxy 2026 Banner"/>
 
-  <h1>🚀 TG Proxy Android 2026</h1>
-  <p><strong>Ультра-быстрый локальный SOCKS5-прокси со встроенным WebSocket/VLESS обходом блокировок для Telegram</strong></p>
+  <h1>TG Proxy Android 2026</h1>
+  <p><strong>Быстрый локальный SOCKS5-прокси со встроенным WebSocket/VLESS обходом блокировок для Telegram</strong></p>
 
+  [![Download APK](https://img.shields.io/github/v/release/nonlxyzsg-dev/TelegramUnlockAppAndroid2026?style=for-the-badge&label=Скачать%20APK&color=green)](https://github.com/nonlxyzsg-dev/TelegramUnlockAppAndroid2026/releases/latest)
   [![Telegram Channel](https://img.shields.io/badge/Telegram-Канал-blue?style=for-the-badge&logo=telegram)](https://t.me/TgUnlock2026)
-  [![Android Support](https://img.shields.io/badge/Android-7.0+-3DDC84?style=for-the-badge&logo=android)](https://github.com/Genuys)
+  [![Android Support](https://img.shields.io/badge/Android-7.0+-3DDC84?style=for-the-badge&logo=android)](#)
   [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](#)
 </div>
 
 ---
 
-## ⚡ Особенности и Преимущества
+## Особенности
 
-В отличие от классических MTProto-прокси, **TG Proxy 2026** работает совершенно иначе. Это полностью локальное приложение, которое поднимает "прозрачный" SOCKS5-сервер прямо на вашем смартфоне (`127.0.0.1:1080`).
+В отличие от классических MTProto-прокси, **TG Proxy 2026** работает иначе. Это локальное приложение, которое поднимает SOCKS5-сервер на вашем смартфоне (`127.0.0.1:1080`).
 
-Весь трафик Telegram пропускается через мощный внутренний фильтр приложения и оборачивается в **WebSocket** или **VLESS**, пробивая блокировки провайдеров (DPI, ТСПУ) на любых сетях. Последние обновления **полностью оптимизировали работу на мобильном интернете (МТС и др.)**, решив проблемы с таймаутами.
+Трафик Telegram оборачивается в **WebSocket** или **VLESS**, пробивая блокировки провайдеров (DPI, ТСПУ) на любых сетях.
 
-### 🌟 Ключевые фичи:
-- **🚄 Нулевой пинг (Connection Pooling):** Приложение держит в фоне пул "горячих" TLS-подключений ко всем дата-центрам Telegram. Медиа, видео и кружочки грузятся **моментально**.
-- **🛡️ 3 Режима работы:** 
-  1. **Оригинал** — Прямой зашифрованный транспорт (быстрый).
-  2. **Python-обходник** — Полная имитация браузерного трафика для обмана ТСПУ.
+### Ключевые возможности:
+- **Connection Pooling:** Пул "горячих" TLS-подключений ко всем дата-центрам Telegram. Медиа и видео грузятся моментально.
+- **3 режима работы:**
+  1. **Оригинал** — MTProto через WebSocket напрямую к серверам Telegram (быстрый).
+  2. **Python-обходник** — Имитация браузерного трафика для обхода ТСПУ.
   3. **VLESS** — Интеграция с сервером VLESS (Xray/Reality) по одной ссылке.
-- **⚡ QuickProxy MTProto:** Встроенные внешние рабочие сервера. Добавили переназначение в один клик для случаев, когда локальный обход не нужен или заблокирован.
-- **⚙️ Гибкая ручная настройка:** Возможность задать свой `IP-адрес локалхоста`, выбрать любой `порт` (1-65535) и вручную указать `IP-адрес Telegram DC` для точного измерения пинга через туннель прокси.
-- **🔋 Оптимизация батареи:** Работает в фоне через Android Foreground Service с минимальным потреблением ресурсов с использованием Connection Keep-Alive.
-- **🔄 Динамический порт:** Защита от обнаружения локальными фаерволами путём ротации портов.
+- **QuickProxy MTProto:** Встроенные резервные прокси-серверы в один клик.
+- **Гибкая настройка:** Свой IP, порт (1-65535), ручной выбор Telegram DC для пинга.
+- **Фоновая работа:** Foreground Service с WiFi Lock и мониторингом сети.
+- **Динамический порт:** Ротация портов для защиты от обнаружения.
 
 ---
 
-## 📸 Дизайн и Интерфейс
+## Установка
+
+### Способ 1: Скачать готовый APK (рекомендуется)
+
+1. Перейдите в [**Releases**](https://github.com/nonlxyzsg-dev/TelegramUnlockAppAndroid2026/releases/latest)
+2. Скачайте файл `TGProxy-x.x.x.apk`
+3. Установите на Android (разрешите установку из неизвестных источников)
+
+### Способ 2: Собрать из исходников
+
+```bash
+git clone https://github.com/nonlxyzsg-dev/TelegramUnlockAppAndroid2026.git
+cd TelegramUnlockAppAndroid2026
+./gradlew assembleRelease
+```
+
+APK будет в `app/build/outputs/apk/release/`
+
+---
+
+## Использование
+
+1. Откройте приложение, выберите режим: **Оригинал** / **Python** / **VLESS**
+2. *(Опционально)* Укажите свой порт или оставьте `1080`
+3. Нажмите **"Запустить"**
+4. В **Telegram**: Настройки → Данные и память → Прокси → добавьте:
+   - Тип: **SOCKS5**
+   - Сервер: `127.0.0.1`
+   - Порт: `1080`
+5. Если локальный обход не работает — используйте **QuickProxy** кнопки внизу приложения
+
+---
+
+## Сборка через GitHub Actions
+
+Проект автоматически собирается через GitHub Actions. Новый релиз создаётся одной кнопкой:
+
+1. Перейдите в **Actions** → **Build APK**
+2. Нажмите **Run workflow**
+3. Выберите тип версии (patch/minor/major)
+4. APK появится в разделе **Releases**
+
+---
+
+## Контакты
+
+- Telegram-канал: [@TgUnlock2026](https://t.me/TgUnlock2026)
+- Issues: [Создать баг-репорт](https://github.com/nonlxyzsg-dev/TelegramUnlockAppAndroid2026/issues)
 
 <div align="center">
-  <img src="https://i.postimg.cc/CLkV8kWs/Screenshot-20260322-001729.jpg" width="250px" alt="TG Proxy Logo"/>
   <br/>
-  <em>Стильный темный интерфейс (Dark Mode Glassmorphism)</em>
-</div>
-
----
-
-## 🛠 Установка и Использование
-
-1. Скачайте последний **APK-файл** из раздела [Releases](https://github.com/Genuys/TelegramUnlockAppAndroid2026/releases) или скомпилируйте проект в Android Studio.
-2. Откройте приложение, выберите нужный режим: **Оригинал** / **Python** / **VLESS**
-3. *(Опционально)* Укажите свой порт или оставьте по умолчанию `1080` (либо включите `Динамический порт`).
-4. Нажмите кнопку **"Запустить"**.
-5. Кликните по ссылке `tg://socks?server=...` в приложении — вас автоматически перекинет в **Telegram** с предложением подключить прокси.
-6. В случае проблем с локальным подключением на мобильном интернете (редко, зависит от оператора), используйте готовые резервные сервера **QuickProxy East/Russia** внизу приложения.
-
----
-
-## 📡 Контакты и Поддержка
-
-Будем рады вашим Pull Request'ам и вопросам! Если вы нашли баг или хотите предложить улучшения для новых версий обходчика:
-- 📢 Официальный канал: [@TgUnlock2026](https://t.me/TgUnlock2026)
-- 🐛 Issues: [Создать баг-репорт Github](https://github.com/Genuys/TelegramUnlockAppAndroid2026/issues)
-
-<div align="center">
-  <br/>
-  <i>Разработано с ❤️ для свободного интернета 2026</i>
+  <i>Для свободного интернета</i>
 </div>

@@ -88,9 +88,6 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug
-
       - name: Build Release APK
         run: ./gradlew assembleRelease
         env:
@@ -99,25 +96,17 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-      - name: Rename APKs
+      - name: Rename APK
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          cp app/build/outputs/apk/debug/app-debug.apk "app/build/outputs/apk/debug/TGProxy-${VERSION}-debug.apk"
-          # Find release APK (signed or unsigned)
           RELEASE_APK=$(find app/build/outputs/apk/release/ -name "*.apk" | head -1)
-          cp "$RELEASE_APK" "app/build/outputs/apk/release/TGProxy-${VERSION}-release.apk"
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: TGProxy-debug
-          path: app/build/outputs/apk/debug/TGProxy-*-debug.apk
+          cp "$RELEASE_APK" "app/build/outputs/apk/release/TGProxy-${VERSION}.apk"
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: TGProxy-release
-          path: app/build/outputs/apk/release/TGProxy-*-release.apk
+          path: app/build/outputs/apk/release/TGProxy-*.apk
 
       - name: Commit version bump
         if: github.event_name == 'workflow_dispatch' && inputs.create_release
@@ -144,9 +133,24 @@ jobs:
 
           # Create release with gh CLI
           gh release create "$TAG" \
-            "app/build/outputs/apk/debug/TGProxy-${VERSION}-debug.apk" \
-            "app/build/outputs/apk/release/TGProxy-${VERSION}-release.apk" \
+            "app/build/outputs/apk/release/TGProxy-${VERSION}.apk" \
             --title "TG Proxy $TAG" \
-            --generate-notes
+            --notes "$(cat <<'NOTES'
+          ## TG Proxy $TAG
+
+          Быстрый локальный SOCKS5-прокси для обхода блокировок Telegram.
+
+          ### Режимы работы
+          - **Оригинал** — MTProto через WebSocket напрямую к серверам Telegram
+          - **Python-обходник** — имитация браузерного трафика для обхода DPI
+          - **VLESS** — подключение через VLESS-сервер
+
+          ### Установка
+          1. Скачайте **TGProxy-${VERSION}.apk**
+          2. Установите на Android (разрешите установку из неизвестных источников)
+          3. Откройте приложение → выберите режим → нажмите Старт
+          4. В Telegram: Настройки → Данные и память → Прокси → добавьте SOCKS5 `127.0.0.1:1080`
+          NOTES
+          )"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

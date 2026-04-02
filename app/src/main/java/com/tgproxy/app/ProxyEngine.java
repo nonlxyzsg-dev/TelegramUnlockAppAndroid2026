@@ -116,6 +116,14 @@ public class ProxyEngine {
         return running;
     }
 
+    public void refreshPool() {
+        wsPool.refresh();
+    }
+
+    public void clearPool() {
+        wsPool.clear();
+    }
+
     private void handleClient(Socket client) {
         activeSockets.add(client);
         try {

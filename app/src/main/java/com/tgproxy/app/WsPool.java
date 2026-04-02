@@ -41,7 +41,7 @@ public class WsPool {
         Thread sweeper = new Thread(() -> {
             while (running) {
                 try {
-                    Thread.sleep(30000);
+                    Thread.sleep(15000);
                     long now = System.currentTimeMillis() / 1000;
                     synchronized (buckets) {
                         for (List<Entry> b : buckets.values()) {
@@ -74,6 +74,20 @@ public class WsPool {
             }
             buckets.clear();
         }
+    }
+
+    public void clear() {
+        synchronized (buckets) {
+            for (List<Entry> b : buckets.values()) {
+                for (Entry e : b) e.ws.close();
+                b.clear();
+            }
+        }
+    }
+
+    public void refresh() {
+        clear();
+        warmup();
     }
 
     public RawWebSocket get(int dc, boolean m, String tip, String[] doms) {
