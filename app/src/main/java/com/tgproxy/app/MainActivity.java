@@ -31,7 +31,7 @@ import java.net.Socket;
 
 public class MainActivity extends AppCompatActivity {
 
-    private Button btnStart, btnStop, btnQpEast, btnQpRu;
+    private Button btnStart, btnStop;
     private TextView tvStatus, tvAddress, tvPort, tvTgLink, tvPing, tvTraffic, tvUptime;
     private RadioGroup rgMode;
     private RadioButton rbOriginal, rbPython, rbVless;
@@ -71,9 +71,6 @@ public class MainActivity extends AppCompatActivity {
         etCustomPort = findViewById(R.id.et_custom_port);
         etCustomIp = findViewById(R.id.et_custom_ip);
         etTgIp = findViewById(R.id.et_tg_ip);
-        btnQpEast = findViewById(R.id.btn_qp_east);
-        btnQpRu = findViewById(R.id.btn_qp_ru);
-
         int savedMode = prefs.getInt("proxy_mode", ProxyEngine.MODE_ORIGINAL);
         switch (savedMode) {
             case ProxyEngine.MODE_PYTHON:
@@ -121,12 +118,6 @@ public class MainActivity extends AppCompatActivity {
 
         btnStart.setOnClickListener(v -> startProxy());
         btnStop.setOnClickListener(v -> stopProxy());
-        btnQpEast.setOnClickListener(v -> openQuickProxy(
-                "tg://proxy?server=peyk.acharbashi.info&port=4515" +
-                "&secret=7umk8jsddowEqNfzkSDKW25iaXNjb3R0aS55ZWt0YW5ldC5jb20"));
-        btnQpRu.setOnClickListener(v -> openQuickProxy(
-                "tg://proxy?server=wiseprox.sbrf-cdn342.ru&port=443" +
-                "&secret=000102030405060708090a0b0c0d0e0f"));
 
         setupCopyOnTap(tvAddress);
         setupCopyOnTap(tvPort);
@@ -156,29 +147,14 @@ public class MainActivity extends AppCompatActivity {
 
         TextView tvTgChannel = findViewById(R.id.tv_tg_channel);
         TextView tvGithub = findViewById(R.id.tv_github);
-        tvTgChannel.setOnClickListener(v -> openLink("https://t.me/TgUnlock2026"));
-        tvGithub.setOnClickListener(v -> openLink("https://github.com/Genuys/TelegramUnlockAppAndroid2026"));
+        tvTgChannel.setOnClickListener(v -> openLink("https://t.me/jar_with_neurons"));
+        tvGithub.setOnClickListener(v -> openLink("https://github.com/nonlxyzsg-dev/TelegramUnlockAppAndroid2026"));
     }
 
     private void openLink(String url) {
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)));
         } catch (Exception ignored) {
-        }
-    }
-
-    private void openQuickProxy(String tgUrl) {
-        try {
-            Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(tgUrl));
-            startActivity(i);
-        } catch (Exception e) {
-            try {
-                String web = tgUrl
-                        .replace("tg://proxy?", "https://t.me/proxy?")
-                        .replace("tg://proxy?", "https://t.me/proxy?");
-                startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(web)));
-            } catch (Exception ignored) {
-            }
         }
     }
 
