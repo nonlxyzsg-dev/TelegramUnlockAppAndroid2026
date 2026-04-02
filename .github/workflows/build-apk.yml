@@ -79,32 +79,34 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Decode keystore
+        if: env.KEYSTORE_BASE64 != ''
+        run: echo "$KEYSTORE_BASE64" | base64 -d > ${{ github.workspace }}/release.jks
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug
-
       - name: Build Release APK
         run: ./gradlew assembleRelease
+        env:
+          KEYSTORE_FILE: ${{ github.workspace }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-      - name: Rename APKs
+      - name: Rename APK
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          cp app/build/outputs/apk/debug/app-debug.apk "app/build/outputs/apk/debug/TGProxy-${VERSION}-debug.apk"
-          cp app/build/outputs/apk/release/app-release-unsigned.apk "app/build/outputs/apk/release/TGProxy-${VERSION}-release.apk"
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: TGProxy-debug
-          path: app/build/outputs/apk/debug/TGProxy-*-debug.apk
+          RELEASE_APK=$(find app/build/outputs/apk/release/ -name "*.apk" | head -1)
+          cp "$RELEASE_APK" "app/build/outputs/apk/release/TGProxy-${VERSION}.apk"
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: TGProxy-release
-          path: app/build/outputs/apk/release/TGProxy-*-release.apk
+          path: app/build/outputs/apk/release/TGProxy-*.apk
 
       - name: Commit version bump
         if: github.event_name == 'workflow_dispatch' && inputs.create_release
@@ -131,9 +133,28 @@ jobs:
 
           # Create release with gh CLI
           gh release create "$TAG" \
-            "app/build/outputs/apk/debug/TGProxy-${VERSION}-debug.apk" \
-            "app/build/outputs/apk/release/TGProxy-${VERSION}-release.apk" \
+            "app/build/outputs/apk/release/TGProxy-${VERSION}.apk" \
             --title "TG Proxy $TAG" \
-            --generate-notes
+            --notes "$(cat <<'NOTES'
+          ## TG Proxy v${VERSION}
+
+          Быстрый локальный SOCKS5-прокси для обхода блокировок Telegram через WebSocket.
+
+          ### Возможности
+          - **2 режима**: Оригинал (быстрый) и Python-обходник (для сильной DPI-фильтрации)
+          - **Диагностика соединения** — проверка сети, доступности Telegram и работы прокси
+          - **Стабильная фоновая работа** — WiFi Lock, keepalive, мониторинг сети
+          - **Пул горячих соединений** ко всем 5 дата-центрам Telegram
+          - **Ротация User-Agent** для снижения обнаружения DPI
+
+          ### Установка
+          1. Скачайте **TGProxy-${VERSION}.apk** ниже
+          2. Установите на Android 7.0+ (разрешите установку из неизвестных источников)
+          3. Откройте -> выберите режим -> нажмите Старт
+          4. В Telegram: Настройки -> Данные и память -> Прокси -> SOCKS5 `127.0.0.1:1080`
+
+          Канал: [@jar_with_neurons](https://t.me/jar_with_neurons)
+          NOTES
+          )"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

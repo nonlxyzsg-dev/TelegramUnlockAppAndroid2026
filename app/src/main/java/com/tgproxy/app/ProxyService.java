@@ -12,6 +12,10 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkRequest;
+import android.net.wifi.WifiManager;
 
 import androidx.preference.PreferenceManager;
 
@@ -24,6 +28,8 @@ public class ProxyService extends Service {
 
     private ProxyEngine engine;
     private PowerManager.WakeLock wakeLock;
+    private WifiManager.WifiLock wifiLock;
+    private ConnectivityManager.NetworkCallback networkCallback;
     private Handler handler;
     private int port;
     private String boundIp = "127.0.0.1";
@@ -65,6 +71,12 @@ public class ProxyService extends Service {
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TGProxy::ProxyWake");
         wakeLock.acquire();
+
+        WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+        wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "TGProxy::WifiLock");
+        wifiLock.acquire();
+
+        registerNetworkCallback();
     }
 
     @Override
@@ -88,14 +100,12 @@ public class ProxyService extends Service {
         if (boundIp == null || boundIp.trim().isEmpty()) boundIp = "127.0.0.1";
 
         int mode = prefs.getInt("proxy_mode", ProxyEngine.MODE_ORIGINAL);
-        String vlessUri = prefs.getString("vless_uri", "");
 
         startForeground(NOTIF_ID, buildNotification());
         startTime = System.currentTimeMillis();
 
         engine = new ProxyEngine();
         engine.setMode(mode);
-        engine.setVlessUri(vlessUri);
         engine.setBoundIp(boundIp);
 
         new Thread(() -> {
@@ -121,6 +131,10 @@ public class ProxyService extends Service {
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
+        if (wifiLock != null && wifiLock.isHeld()) {
+            wifiLock.release();
+        }
+        unregisterNetworkCallback();
         stopForeground(true);
         super.onDestroy();
     }
@@ -135,10 +149,12 @@ public class ProxyService extends Service {
             NotificationChannel ch = new NotificationChannel(
                     CHANNEL_ID,
                     "TG Proxy",
-                    NotificationManager.IMPORTANCE_LOW
+                    NotificationManager.IMPORTANCE_DEFAULT
             );
             ch.setDescription("SOCKS5 Proxy");
             ch.setShowBadge(false);
+            ch.setSound(null, null);
+            ch.enableVibration(false);
             NotificationManager nm = getSystemService(NotificationManager.class);
             nm.createNotificationChannel(ch);
         }
@@ -187,5 +203,39 @@ public class ProxyService extends Service {
 
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.notify(NOTIF_ID, n);
+    }
+
+    private void registerNetworkCallback() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    if (engine != null) {
+                        engine.refreshPool();
+                    }
+                }
+
+                @Override
+                public void onLost(Network network) {
+                    if (engine != null) {
+                        engine.clearPool();
+                    }
+                }
+            };
+            cm.registerNetworkCallback(new NetworkRequest.Builder().build(), networkCallback);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void unregisterNetworkCallback() {
+        try {
+            if (networkCallback != null) {
+                ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                cm.unregisterNetworkCallback(networkCallback);
+                networkCallback = null;
+            }
+        } catch (Exception ignored) {
+        }
     }
 }

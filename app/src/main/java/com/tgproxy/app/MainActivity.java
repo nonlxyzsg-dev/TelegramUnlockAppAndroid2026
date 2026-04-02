@@ -13,11 +13,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
-import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.TextView;
@@ -31,12 +29,11 @@ import java.net.Socket;
 
 public class MainActivity extends AppCompatActivity {
 
-    private Button btnStart, btnStop, btnQpEast, btnQpRu;
+    private Button btnStart, btnStop;
     private TextView tvStatus, tvAddress, tvPort, tvTgLink, tvPing, tvTraffic, tvUptime;
     private RadioGroup rgMode;
-    private RadioButton rbOriginal, rbPython, rbVless;
-    private EditText etVless, etCustomPort, etCustomIp, etTgIp;
-    private LinearLayout llVless;
+    private RadioButton rbOriginal, rbPython;
+    private EditText etCustomPort, etCustomIp, etTgIp;
     private CheckBox cbDynamicPort, cbAutostart;
     private Handler handler;
     private Runnable statsUpdater;
@@ -63,32 +60,19 @@ public class MainActivity extends AppCompatActivity {
         rgMode = findViewById(R.id.rg_mode);
         rbOriginal = findViewById(R.id.rb_original);
         rbPython = findViewById(R.id.rb_python);
-        rbVless = findViewById(R.id.rb_vless);
-        etVless = findViewById(R.id.et_vless);
-        llVless = findViewById(R.id.ll_vless);
         cbDynamicPort = findViewById(R.id.cb_dynamic_port);
         cbAutostart = findViewById(R.id.cb_autostart);
         etCustomPort = findViewById(R.id.et_custom_port);
         etCustomIp = findViewById(R.id.et_custom_ip);
         etTgIp = findViewById(R.id.et_tg_ip);
-        btnQpEast = findViewById(R.id.btn_qp_east);
-        btnQpRu = findViewById(R.id.btn_qp_ru);
 
         int savedMode = prefs.getInt("proxy_mode", ProxyEngine.MODE_ORIGINAL);
-        switch (savedMode) {
-            case ProxyEngine.MODE_PYTHON:
-                rbPython.setChecked(true);
-                break;
-            case ProxyEngine.MODE_VLESS:
-                rbVless.setChecked(true);
-                llVless.setVisibility(View.VISIBLE);
-                break;
-            default:
-                rbOriginal.setChecked(true);
-                break;
+        if (savedMode == ProxyEngine.MODE_PYTHON) {
+            rbPython.setChecked(true);
+        } else {
+            rbOriginal.setChecked(true);
         }
 
-        etVless.setText(prefs.getString("vless_uri", ""));
         cbDynamicPort.setChecked(prefs.getBoolean("dynamic_port", false));
         cbAutostart.setChecked(prefs.getBoolean("autostart_open", false));
 
@@ -102,14 +86,9 @@ public class MainActivity extends AppCompatActivity {
         etTgIp.setText(savedTgIp);
 
         rgMode.setOnCheckedChangeListener((group, checkedId) -> {
-            if (checkedId == R.id.rb_vless) {
-                llVless.setVisibility(View.VISIBLE);
-                saveMode(ProxyEngine.MODE_VLESS);
-            } else if (checkedId == R.id.rb_python) {
-                llVless.setVisibility(View.GONE);
+            if (checkedId == R.id.rb_python) {
                 saveMode(ProxyEngine.MODE_PYTHON);
             } else {
-                llVless.setVisibility(View.GONE);
                 saveMode(ProxyEngine.MODE_ORIGINAL);
             }
         });
@@ -121,12 +100,6 @@ public class MainActivity extends AppCompatActivity {
 
         btnStart.setOnClickListener(v -> startProxy());
         btnStop.setOnClickListener(v -> stopProxy());
-        btnQpEast.setOnClickListener(v -> openQuickProxy(
-                "tg://proxy?server=peyk.acharbashi.info&port=4515" +
-                "&secret=7umk8jsddowEqNfzkSDKW25iaXNjb3R0aS55ZWt0YW5ldC5jb20"));
-        btnQpRu.setOnClickListener(v -> openQuickProxy(
-                "tg://proxy?server=wiseprox.sbrf-cdn342.ru&port=443" +
-                "&secret=000102030405060708090a0b0c0d0e0f"));
 
         setupCopyOnTap(tvAddress);
         setupCopyOnTap(tvPort);
@@ -156,29 +129,34 @@ public class MainActivity extends AppCompatActivity {
 
         TextView tvTgChannel = findViewById(R.id.tv_tg_channel);
         TextView tvGithub = findViewById(R.id.tv_github);
-        tvTgChannel.setOnClickListener(v -> openLink("https://t.me/TgUnlock2026"));
-        tvGithub.setOnClickListener(v -> openLink("https://github.com/Genuys/TelegramUnlockAppAndroid2026"));
+        tvTgChannel.setOnClickListener(v -> openLink("https://t.me/jar_with_neurons"));
+        tvGithub.setOnClickListener(v -> openLink("https://github.com/nonlxyzsg-dev/TelegramUnlockAppAndroid2026"));
+
+        TextView tvDiagResult = findViewById(R.id.tv_diag_result);
+        Button btnDiagnose = findViewById(R.id.btn_diagnose);
+        btnDiagnose.setOnClickListener(v -> {
+            btnDiagnose.setEnabled(false);
+            tvDiagResult.setText("\u23F3 \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430...");
+            tvDiagResult.setTextColor(0xFFAAAA00);
+
+            ProxyService svc = ProxyService.getInstance();
+            String proxyIp = svc != null ? svc.getIp() : "127.0.0.1";
+            int proxyPort = svc != null ? svc.getPort() : 1080;
+
+            DiagnosticsUtil.runFullDiagnostics(this, proxyIp, proxyPort, result -> {
+                handler.post(() -> {
+                    tvDiagResult.setText(result.summary);
+                    tvDiagResult.setTextColor(0xFFE0E0E0);
+                    btnDiagnose.setEnabled(true);
+                });
+            });
+        });
     }
 
     private void openLink(String url) {
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)));
         } catch (Exception ignored) {
-        }
-    }
-
-    private void openQuickProxy(String tgUrl) {
-        try {
-            Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(tgUrl));
-            startActivity(i);
-        } catch (Exception e) {
-            try {
-                String web = tgUrl
-                        .replace("tg://proxy?", "https://t.me/proxy?")
-                        .replace("tg://proxy?", "https://t.me/proxy?");
-                startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(web)));
-            } catch (Exception ignored) {
-            }
         }
     }
 
@@ -216,8 +194,6 @@ public class MainActivity extends AppCompatActivity {
         SharedPreferences.Editor e = prefs.edit();
         if (rbOriginal.isChecked()) e.putInt("proxy_mode", ProxyEngine.MODE_ORIGINAL);
         else if (rbPython.isChecked()) e.putInt("proxy_mode", ProxyEngine.MODE_PYTHON);
-        else if (rbVless.isChecked()) e.putInt("proxy_mode", ProxyEngine.MODE_VLESS);
-        e.putString("vless_uri", etVless.getText().toString().trim());
 
         String portStr = etCustomPort.getText().toString().trim();
         int port = 1080;

@@ -18,13 +18,11 @@ public class ProxyEngine {
 
     public static final int MODE_ORIGINAL = 1;
     public static final int MODE_PYTHON = 2;
-    public static final int MODE_VLESS = 3;
 
     private volatile boolean running = false;
     private ServerSocket serverSocket;
     private ExecutorService pool;
     private int mode = MODE_ORIGINAL;
-    private String vlessUri = "";
     private int rotateIdx = 0;
     private final WsPool wsPool = new WsPool();
 
@@ -51,10 +49,6 @@ public class ProxyEngine {
 
     public void setMode(int m) {
         this.mode = m;
-    }
-
-    public void setVlessUri(String uri) {
-        this.vlessUri = uri;
     }
 
     public int getMode() {
@@ -175,9 +169,6 @@ public class ProxyEngine {
             }
 
             switch (mode) {
-                case MODE_VLESS:
-                    handleVless(client, in, out, dst, port);
-                    break;
                 case MODE_PYTHON:
                     handlePython(client, in, out, dst, port);
                     break;
@@ -383,72 +374,12 @@ public class ProxyEngine {
         bridgeWs(in, out, ws, patched ? init : null);
     }
 
-    private void handleVless(Socket client, InputStream in, OutputStream out, String dst, int port) throws Exception {
-        if (vlessUri == null || vlessUri.isEmpty()) {
-            out.write(socks5Reply(5));
-            out.flush();
-            client.close();
-            return;
-        }
+    public void refreshPool() {
+        wsPool.refresh();
+    }
 
-        out.write(socks5Reply(0));
-        out.flush();
-
-        VlessClient vless = new VlessClient(vlessUri);
-        try {
-            vless.connect(dst, port);
-        } catch (Exception e) {
-            errors.incrementAndGet();
-            client.close();
-            return;
-        }
-
-        connWs.incrementAndGet();
-
-        Thread upThread = new Thread(() -> {
-            try {
-                byte[] buf = new byte[TgConstants.BUF];
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    bytesUp.addAndGet(n);
-                    vless.sendData(Arrays.copyOf(buf, n));
-                    notifyStats();
-                }
-            } catch (Exception ignored) {
-            } finally {
-                vless.disconnect();
-                try { client.close(); } catch (Exception ignored) {}
-            }
-        });
-
-        Thread downThread = new Thread(() -> {
-            try {
-                while (vless.isConnected()) {
-                    byte[] data = vless.receiveData();
-                    if (data == null) break;
-                    bytesDown.addAndGet(data.length);
-                    out.write(data);
-                    out.flush();
-                    notifyStats();
-                }
-            } catch (Exception ignored) {
-            } finally {
-                vless.disconnect();
-                try { client.close(); } catch (Exception ignored) {}
-            }
-        });
-
-        upThread.start();
-        downThread.start();
-
-        try {
-            upThread.join();
-        } catch (InterruptedException ignored) {
-        }
-        try {
-            downThread.join();
-        } catch (InterruptedException ignored) {
-        }
+    public void clearPool() {
+        wsPool.clear();
     }
 
     private void handlePassthrough(Socket client, InputStream in, OutputStream out, String dst, int port) throws Exception {
