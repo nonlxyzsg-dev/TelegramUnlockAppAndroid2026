@@ -79,6 +79,12 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Decode keystore
+        if: env.KEYSTORE_BASE64 != ''
+        run: echo "$KEYSTORE_BASE64" | base64 -d > ${{ github.workspace }}/release.jks
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
@@ -87,12 +93,19 @@ jobs:
 
       - name: Build Release APK
         run: ./gradlew assembleRelease
+        env:
+          KEYSTORE_FILE: ${{ github.workspace }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
       - name: Rename APKs
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cp app/build/outputs/apk/debug/app-debug.apk "app/build/outputs/apk/debug/TGProxy-${VERSION}-debug.apk"
-          cp app/build/outputs/apk/release/app-release-unsigned.apk "app/build/outputs/apk/release/TGProxy-${VERSION}-release.apk"
+          # Find release APK (signed or unsigned)
+          RELEASE_APK=$(find app/build/outputs/apk/release/ -name "*.apk" | head -1)
+          cp "$RELEASE_APK" "app/build/outputs/apk/release/TGProxy-${VERSION}-release.apk"
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
