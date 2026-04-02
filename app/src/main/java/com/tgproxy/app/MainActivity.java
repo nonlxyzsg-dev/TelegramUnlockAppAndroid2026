@@ -13,11 +13,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
-import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.TextView;
@@ -34,9 +32,8 @@ public class MainActivity extends AppCompatActivity {
     private Button btnStart, btnStop;
     private TextView tvStatus, tvAddress, tvPort, tvTgLink, tvPing, tvTraffic, tvUptime;
     private RadioGroup rgMode;
-    private RadioButton rbOriginal, rbPython, rbVless;
-    private EditText etVless, etCustomPort, etCustomIp, etTgIp;
-    private LinearLayout llVless;
+    private RadioButton rbOriginal, rbPython;
+    private EditText etCustomPort, etCustomIp, etTgIp;
     private CheckBox cbDynamicPort, cbAutostart;
     private Handler handler;
     private Runnable statsUpdater;
@@ -63,29 +60,19 @@ public class MainActivity extends AppCompatActivity {
         rgMode = findViewById(R.id.rg_mode);
         rbOriginal = findViewById(R.id.rb_original);
         rbPython = findViewById(R.id.rb_python);
-        rbVless = findViewById(R.id.rb_vless);
-        etVless = findViewById(R.id.et_vless);
-        llVless = findViewById(R.id.ll_vless);
         cbDynamicPort = findViewById(R.id.cb_dynamic_port);
         cbAutostart = findViewById(R.id.cb_autostart);
         etCustomPort = findViewById(R.id.et_custom_port);
         etCustomIp = findViewById(R.id.et_custom_ip);
         etTgIp = findViewById(R.id.et_tg_ip);
+
         int savedMode = prefs.getInt("proxy_mode", ProxyEngine.MODE_ORIGINAL);
-        switch (savedMode) {
-            case ProxyEngine.MODE_PYTHON:
-                rbPython.setChecked(true);
-                break;
-            case ProxyEngine.MODE_VLESS:
-                rbVless.setChecked(true);
-                llVless.setVisibility(View.VISIBLE);
-                break;
-            default:
-                rbOriginal.setChecked(true);
-                break;
+        if (savedMode == ProxyEngine.MODE_PYTHON) {
+            rbPython.setChecked(true);
+        } else {
+            rbOriginal.setChecked(true);
         }
 
-        etVless.setText(prefs.getString("vless_uri", ""));
         cbDynamicPort.setChecked(prefs.getBoolean("dynamic_port", false));
         cbAutostart.setChecked(prefs.getBoolean("autostart_open", false));
 
@@ -99,14 +86,9 @@ public class MainActivity extends AppCompatActivity {
         etTgIp.setText(savedTgIp);
 
         rgMode.setOnCheckedChangeListener((group, checkedId) -> {
-            if (checkedId == R.id.rb_vless) {
-                llVless.setVisibility(View.VISIBLE);
-                saveMode(ProxyEngine.MODE_VLESS);
-            } else if (checkedId == R.id.rb_python) {
-                llVless.setVisibility(View.GONE);
+            if (checkedId == R.id.rb_python) {
                 saveMode(ProxyEngine.MODE_PYTHON);
             } else {
-                llVless.setVisibility(View.GONE);
                 saveMode(ProxyEngine.MODE_ORIGINAL);
             }
         });
@@ -192,8 +174,6 @@ public class MainActivity extends AppCompatActivity {
         SharedPreferences.Editor e = prefs.edit();
         if (rbOriginal.isChecked()) e.putInt("proxy_mode", ProxyEngine.MODE_ORIGINAL);
         else if (rbPython.isChecked()) e.putInt("proxy_mode", ProxyEngine.MODE_PYTHON);
-        else if (rbVless.isChecked()) e.putInt("proxy_mode", ProxyEngine.MODE_VLESS);
-        e.putString("vless_uri", etVless.getText().toString().trim());
 
         String portStr = etCustomPort.getText().toString().trim();
         int port = 1080;

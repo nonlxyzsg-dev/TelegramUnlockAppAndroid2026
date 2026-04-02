@@ -127,14 +127,12 @@ public class ProxyService extends Service {
         if (boundIp == null || boundIp.trim().isEmpty()) boundIp = "127.0.0.1";
 
         int mode = prefs.getInt("proxy_mode", ProxyEngine.MODE_ORIGINAL);
-        String vlessUri = prefs.getString("vless_uri", "");
 
         startForeground(NOTIF_ID, buildNotification());
         startTime = System.currentTimeMillis();
 
         engine = new ProxyEngine();
         engine.setMode(mode);
-        engine.setVlessUri(vlessUri);
         engine.setBoundIp(boundIp);
 
         new Thread(() -> {
