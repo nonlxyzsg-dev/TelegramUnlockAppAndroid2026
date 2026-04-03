@@ -165,6 +165,8 @@ public class MainActivity extends AppCompatActivity {
 
         TextView tvDiagResult = findViewById(R.id.tv_diag_result);
         Button btnDiagnose = findViewById(R.id.btn_diagnose);
+        Button btnCopyDiag = findViewById(R.id.btn_copy_diag);
+
         btnDiagnose.setOnClickListener(v -> {
             btnDiagnose.setEnabled(false);
             tvDiagResult.setText("\u23F3 \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430...");
@@ -181,6 +183,17 @@ public class MainActivity extends AppCompatActivity {
                     btnDiagnose.setEnabled(true);
                 });
             });
+        });
+
+        btnCopyDiag.setOnClickListener(v -> {
+            String text = tvDiagResult.getText().toString();
+            if (text.isEmpty() || text.startsWith("\u041d\u0430\u0436\u043c\u0438\u0442\u0435") || text.startsWith("\u23F3")) {
+                Toast.makeText(this, "\u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(ClipData.newPlainText("diagnostics", text));
+            Toast.makeText(this, "\u0414\u0438\u0430\u0433\u043d\u043e\u0441\u0442\u0438\u043a\u0430 \u0441\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u0430", Toast.LENGTH_SHORT).show();
         });
     }
 
