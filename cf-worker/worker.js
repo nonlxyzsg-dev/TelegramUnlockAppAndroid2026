@@ -1,59 +1,100 @@
 /**
  * Cloudflare Worker — WebSocket relay для Telegram MTProto.
- *
- * Маршрут: wss://your-worker.workers.dev/dc{1-5}/apiws
- *   → проксирует в wss://kws{N}.web.telegram.org/apiws
- *
- * ТСПУ видит TLS к Cloudflare (не к Telegram) — нет причин блокировать.
+ * v3 — WebSocketPair с правильной обработкой binary данных.
  */
 
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-
-    // Парсим путь: /dc2/apiws → DC 2
     const match = url.pathname.match(/^\/dc(\d+)(\/.*)?$/);
     if (!match) {
-      return new Response(
-        'Telegram WS Relay v2\n\nИспользование: /dc{1-5}/apiws\nПример: wss://this-worker.workers.dev/dc2/apiws\n',
-        { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8' } }
-      );
+      return new Response('Telegram WS Relay v3\n/dc{1-5}/apiws\n', { status: 200 });
     }
 
     const dc = parseInt(match[1]);
-    if (dc < 1 || dc > 5) {
-      return new Response('DC must be 1-5', { status: 400 });
-    }
+    if (dc < 1 || dc > 5) return new Response('DC 1-5', { status: 400 });
 
     const path = match[2] || '/apiws';
     const targetHost = `kws${dc}.web.telegram.org`;
     const targetUrl = `https://${targetHost}${path}`;
 
-    // Проверяем WebSocket upgrade
     const upgradeHeader = request.headers.get('Upgrade');
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
-      return new Response(`Relay OK. Target: ${targetHost}`, { status: 200 });
+      return new Response(`OK dc${dc} → ${targetHost}`, { status: 200 });
     }
 
-    // Простой прокси: Cloudflare автоматически проксирует WS при fetch с upgrade
-    // Копируем необходимые заголовки
-    const proxyHeaders = new Headers();
-    proxyHeaders.set('Host', targetHost);
-    proxyHeaders.set('Origin', 'https://web.telegram.org');
-    proxyHeaders.set('User-Agent', request.headers.get('User-Agent') || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    // Подключаемся к Telegram через fetch
+    const tgResp = await fetch(targetUrl, {
+      headers: {
+        'Host': targetHost,
+        'Upgrade': 'websocket',
+        'Connection': 'Upgrade',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Protocol': 'binary',
+        'Origin': 'https://web.telegram.org',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+    });
 
-    // Все WS заголовки
-    for (const [key, val] of request.headers) {
-      if (key.toLowerCase().startsWith('sec-websocket')) {
-        proxyHeaders.set(key, val);
+    const tgWs = tgResp.webSocket;
+    if (!tgWs) {
+      return new Response('Telegram rejected WS: HTTP ' + tgResp.status, { status: 502 });
+    }
+
+    // Создаём пару для клиента
+    const pair = new WebSocketPair();
+    const [clientWs, serverWs] = Object.values(pair);
+
+    // Принимаем оба конца
+    tgWs.accept();
+    serverWs.accept();
+
+    // Клиент → Telegram (бинарные данные без изменений)
+    serverWs.addEventListener('message', (evt) => {
+      try {
+        if (evt.data instanceof ArrayBuffer) {
+          tgWs.send(evt.data);
+        } else {
+          // Текстовое сообщение — конвертируем в бинарное
+          const encoder = new TextEncoder();
+          tgWs.send(encoder.encode(evt.data));
+        }
+      } catch (e) {
+        try { serverWs.close(1011, 'tg send err'); } catch (_) {}
       }
-    }
-    proxyHeaders.set('Upgrade', 'websocket');
-    proxyHeaders.set('Connection', 'Upgrade');
+    });
 
-    // fetch с правильным upgrade — Cloudflare проксирует WS
-    return fetch(targetUrl, {
-      headers: proxyHeaders,
+    // Telegram → Клиент
+    tgWs.addEventListener('message', (evt) => {
+      try {
+        if (evt.data instanceof ArrayBuffer) {
+          serverWs.send(evt.data);
+        } else {
+          const encoder = new TextEncoder();
+          serverWs.send(encoder.encode(evt.data));
+        }
+      } catch (e) {
+        try { tgWs.close(1011, 'client send err'); } catch (_) {}
+      }
+    });
+
+    serverWs.addEventListener('close', (evt) => {
+      try { tgWs.close(evt.code || 1000, evt.reason || ''); } catch (_) {}
+    });
+    tgWs.addEventListener('close', (evt) => {
+      try { serverWs.close(evt.code || 1000, evt.reason || ''); } catch (_) {}
+    });
+    serverWs.addEventListener('error', () => {
+      try { tgWs.close(1011, 'client err'); } catch (_) {}
+    });
+    tgWs.addEventListener('error', () => {
+      try { serverWs.close(1011, 'tg err'); } catch (_) {}
+    });
+
+    return new Response(null, {
+      status: 101,
+      webSocket: clientWs,
+      headers: { 'Sec-WebSocket-Protocol': 'binary' },
     });
   },
 };
