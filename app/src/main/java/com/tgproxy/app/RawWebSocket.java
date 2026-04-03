@@ -700,6 +700,7 @@ public class RawWebSocket {
 
         if (statusCode == 101) {
             raw.setSoTimeout(0);
+            ws.startKeepalive();
             return ws;
         }
 
