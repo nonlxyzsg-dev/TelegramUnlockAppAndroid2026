@@ -174,7 +174,7 @@ public class ProxyEngine {
             byte[] portBytes = readExactly(in, 2);
             int port = ((portBytes[0] & 0xFF) << 8) | (portBytes[1] & 0xFF);
 
-            AppLog.d(TAG, "SOCKS5 CONNECT " + dst + ":" + port);
+            // SOCKS5 connect logged only on error
 
             if (dst.contains(":")) {
                 AppLog.w(TAG, "IPv6 rejected: " + dst);
@@ -206,7 +206,6 @@ public class ProxyEngine {
 
     private void handleOriginal(Socket client, InputStream in, OutputStream out, String dst, int port) throws Exception {
         boolean isTg = TgConstants.isTelegramIp(dst);
-        AppLog.d(TAG, "handleOriginal dst=" + dst + ":" + port + " isTelegram=" + isTg);
 
         if (!isTg) {
             handlePassthrough(client, in, out, dst, port);
@@ -230,9 +229,9 @@ public class ProxyEngine {
         if (dcInfo != null) {
             dc = dcInfo[0];
             isMedia = dcInfo[1] == 1;
-            AppLog.d(TAG, "dcFromInit: dc=" + dc + " media=" + isMedia);
+            // dc found
         } else {
-            AppLog.d(TAG, "dcFromInit returned null");
+            // dcFromInit null
         }
 
         if (dcInfo == null && TgConstants.IP_TO_DC.containsKey(dst)) {
@@ -313,9 +312,17 @@ public class ProxyEngine {
 
         failUntil.remove(dcKey);
         connWs.incrementAndGet();
-        AppLog.i(TAG, "WS connected dc=" + dc);
+        AppLog.i(TAG, ">> dc=" + dc + " init=" + hexHead(init, 16) + " via=" + (RawWebSocket.getRelayUrl() != null ? "relay" : "direct"));
         ws.send(init);
         bridgeWs(in, out, ws, null);
+    }
+
+    private static String hexHead(byte[] data, int max) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(data.length, max); i++) {
+            sb.append(String.format("%02x", data[i] & 0xFF));
+        }
+        return sb.toString() + " (" + data.length + "B)";
     }
 
     private void handlePython(Socket client, InputStream in, OutputStream out, String dst, int port) throws Exception {
@@ -344,9 +351,9 @@ public class ProxyEngine {
         if (dcInfo != null) {
             dc = dcInfo[0];
             isMedia = dcInfo[1] == 1;
-            AppLog.d(TAG, "dcFromInit: dc=" + dc + " media=" + isMedia);
+            // dc found
         } else {
-            AppLog.d(TAG, "dcFromInit returned null");
+            // dcFromInit null
         }
 
         if (dcInfo == null && TgConstants.IP_TO_DC.containsKey(dst)) {
@@ -393,7 +400,7 @@ public class ProxyEngine {
         String[] domains = TgConstants.wsDomains(dc, isMedia);
         String targetIp = TgConstants.DC_IPS.get(dc);
 
-        AppLog.d(TAG, "Trying WS pool for dc=" + dc + " ip=" + targetIp);
+        // pool lookup
         RawWebSocket ws = wsPool.get(dc, isMedia, targetIp, domains);
         boolean hadRedirect = false;
         boolean allRedirects = true;
@@ -535,12 +542,14 @@ public class ProxyEngine {
         final MsgSplitter spl = splitter;
 
         Thread upThread = new Thread(() -> {
+            int upCount = 0;
             try {
                 byte[] buf = new byte[TgConstants.BUF];
                 int n;
                 while ((n = in.read(buf)) > 0) {
                     byte[] chunk = Arrays.copyOf(buf, n);
                     bytesUp.addAndGet(n);
+                    upCount++;
                     if (spl != null) {
                         List<byte[]> parts = spl.split(chunk);
                         if (parts.size() > 1) {
@@ -553,38 +562,38 @@ public class ProxyEngine {
                     }
                     notifyStats();
                 }
-                AppLog.w(TAG, "bridgeWs UP: client stream ended normally");
+                AppLog.w(TAG, "<< UP end: sent " + upCount + " chunks");
             } catch (Exception e) {
-                AppLog.w(TAG, "bridgeWs UP error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                AppLog.w(TAG, "<< UP err: " + e.getClass().getSimpleName() + " after " + upCount + " chunks");
             } finally {
                 ws.close();
-                try {
-                    in.close();
-                    out.close();
-                } catch (Exception ignored) {}
+                try { in.close(); out.close(); } catch (Exception ignored) {}
             }
         });
 
         Thread downThread = new Thread(() -> {
+            int downCount = 0;
+            long totalDown = 0;
             try {
-                boolean gotData = false;
                 while (ws.isAlive()) {
                     byte[] data = ws.recv();
                     if (data == null) {
-                        AppLog.w(TAG, "bridgeWs DOWN: recv null (CLOSE frame), gotData=" + gotData);
+                        AppLog.w(TAG, ">> DOWN close: got " + downCount + " msgs (" + totalDown + "B)");
                         break;
                     }
-                    if (!gotData) {
-                        AppLog.i(TAG, "bridgeWs DOWN: first data " + data.length + " bytes");
-                        gotData = true;
+                    downCount++;
+                    totalDown += data.length;
+                    if (downCount <= 3) {
+                        // Логируем первые 3 ответа с hex
+                        AppLog.i(TAG, ">> DOWN #" + downCount + ": " + hexHead(data, 16));
                     }
                     bytesDown.addAndGet(data.length);
                     out.write(data);
                     out.flush();
                     notifyStats();
                 }
-                if (!gotData) {
-                    AppLog.w(TAG, "bridgeWs DOWN: ended without receiving any data!");
+                if (downCount == 0) {
+                    AppLog.w(TAG, ">> DOWN: NO DATA received!");
                 }
             } catch (Exception e) {
                 AppLog.w(TAG, "bridgeWs DOWN error: " + e.getClass().getSimpleName() + ": " + e.getMessage());

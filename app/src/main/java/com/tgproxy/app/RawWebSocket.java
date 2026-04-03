@@ -337,7 +337,7 @@ public class RawWebSocket {
     /** Обратный вызов для кэшированной стратегии */
     private static RawWebSocket connectWithStrategy(String ip, String domain, int timeout, int fragStrategy, int sniMode) throws Exception {
         String desc = sniModeName(sniMode) + "+" + strategyName(fragStrategy);
-        AppLog.d(TAG, "WS: trying " + ip + ":443 domain=" + domain + " strategy=" + desc);
+        // debug лог убран для сокращения объёма
 
         Socket raw = new Socket();
         raw.connect(new java.net.InetSocketAddress(ip, 443), timeout);
@@ -610,7 +610,6 @@ public class RawWebSocket {
         }
 
         String fullUrl = relayUrl + "/dc" + dc + "/apiws";
-        AppLog.d(TAG, "WS: connecting via relay " + fullUrl);
 
         // Парсим URL relay
         java.net.URL url = new java.net.URL(fullUrl);
@@ -636,7 +635,6 @@ public class RawWebSocket {
             }
 
             ssl.startHandshake();
-            AppLog.d(TAG, "WS: relay TLS OK, proto=" + ssl.getSession().getProtocol());
             finalSocket = ssl;
         }
 
@@ -675,7 +673,7 @@ public class RawWebSocket {
             }
         }
 
-        AppLog.d(TAG, "WS: relay handshake status=" + statusCode);
+        if (statusCode != 101) AppLog.w(TAG, "relay handshake: " + statusCode);
 
         if (statusCode == 101) {
             finalSocket.setSoTimeout(0);
