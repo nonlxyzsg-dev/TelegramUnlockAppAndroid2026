@@ -24,10 +24,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Не запускаем на коммитах от бота (Bump version) — иначе будет бесконечный цикл
-    if: >-
-      github.event_name != 'push' ||
-      !contains(github.event.head_commit.message, 'Bump version')
+    # Не запускаем на коммитах от бота — иначе будет бесконечный цикл
+    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
     permissions:
       contents: write
 
