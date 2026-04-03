@@ -18,22 +18,23 @@ public class LogActivity extends AppCompatActivity {
     private ScrollView scrollView;
     private boolean autoScroll = true;
     private Handler handler;
+    private int pendingLines = 0;
+    private static final int LOG_BATCH_DELAY = 300; // мс — обновляем UI не чаще
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(0xFF0A0A0A);
-        sv.setFillViewport(true);
+        // Корневой layout: кнопки сверху (фиксированные) + ScrollView с логами снизу
+        android.widget.LinearLayout mainLayout = new android.widget.LinearLayout(this);
+        mainLayout.setOrientation(android.widget.LinearLayout.VERTICAL);
+        mainLayout.setBackgroundColor(0xFF0A0A0A);
 
-        android.widget.LinearLayout root = new android.widget.LinearLayout(this);
-        root.setOrientation(android.widget.LinearLayout.VERTICAL);
-        root.setPadding(16, 16, 16, 16);
-
-        // Кнопки
+        // Кнопки — фиксированные сверху
         android.widget.LinearLayout btnRow = new android.widget.LinearLayout(this);
         btnRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        btnRow.setPadding(16, 8, 16, 8);
+        btnRow.setBackgroundColor(0xFF1A1A1A);
 
         Button btnCopy = new Button(this);
         btnCopy.setText("Копировать");
@@ -50,7 +51,7 @@ public class LogActivity extends AppCompatActivity {
         btnClear.setAllCaps(false);
         android.widget.LinearLayout.LayoutParams btnLp2 = new android.widget.LinearLayout.LayoutParams(
                 0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        btnLp2.setMargins(8, 0, 0, 0);
+        btnLp2.setMargins(8, 0, 8, 0);
         btnRow.addView(btnClear, btnLp2);
 
         Button btnRefresh = new Button(this);
@@ -62,20 +63,28 @@ public class LogActivity extends AppCompatActivity {
         btnLp3.setMargins(8, 0, 0, 0);
         btnRow.addView(btnRefresh, btnLp3);
 
-        root.addView(btnRow);
+        // Кнопки не скроллятся — фиксированы сверху
+        mainLayout.addView(btnRow, new android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        // Текст логов
+        // ScrollView с логами — занимает оставшееся место
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(true);
+
         tvLog = new TextView(this);
         tvLog.setTextColor(0xFF00FF00);
         tvLog.setTextSize(11);
         tvLog.setTypeface(android.graphics.Typeface.MONOSPACE);
-        tvLog.setPadding(0, 16, 0, 16);
+        tvLog.setPadding(16, 8, 16, 8);
         tvLog.setTextIsSelectable(true);
-        root.addView(tvLog);
+        sv.addView(tvLog);
 
-        sv.addView(root);
         scrollView = sv;
-        setContentView(sv);
+        mainLayout.addView(sv, new android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+
+        setContentView(mainLayout);
 
         handler = new Handler(Looper.getMainLooper());
 
@@ -88,13 +97,17 @@ public class LogActivity extends AppCompatActivity {
         // Загрузить текущие логи
         refreshLog();
 
-        // Подписка на новые логи
-        AppLog.setListener(line -> handler.post(() -> {
-            tvLog.append(line + "\n");
-            if (autoScroll) {
-                scrollView.post(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN));
+        // Подписка на новые логи — батчим обновления UI
+        AppLog.setListener(line -> {
+            pendingLines++;
+            handler.removeCallbacks(batchUpdate);
+            if (pendingLines >= 50) {
+                // Много строк — обновляем сразу (но не чаще чем раз в 300мс)
+                handler.post(batchUpdate);
+            } else {
+                handler.postDelayed(batchUpdate, LOG_BATCH_DELAY);
             }
-        }));
+        });
 
         btnCopy.setOnClickListener(v -> {
             String logs = AppLog.getAll();
@@ -116,15 +129,23 @@ public class LogActivity extends AppCompatActivity {
         btnRefresh.setOnClickListener(v -> refreshLog());
     }
 
+    private final Runnable batchUpdate = () -> {
+        pendingLines = 0;
+        refreshLog();
+    };
+
     private void refreshLog() {
         String logs = AppLog.getAll();
         tvLog.setText(logs.isEmpty() ? "Логов пока нет. Запустите прокси." : logs);
-        scrollView.post(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN));
+        if (autoScroll) {
+            scrollView.post(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN));
+        }
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        handler.removeCallbacks(batchUpdate);
         AppLog.setListener(null);
     }
 

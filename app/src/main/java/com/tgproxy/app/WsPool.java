@@ -98,25 +98,19 @@ public class WsPool {
 
         synchronized (buckets) {
             List<Entry> bucket = buckets.get(key);
-            int bucketSize = bucket == null ? 0 : bucket.size();
-            AppLog.d("TGProxy", "Pool get key=" + key + " bucketSize=" + bucketSize);
             if (bucket != null) {
                 while (!bucket.isEmpty()) {
                     Entry e = bucket.remove(0);
                     long age = now - e.time;
-                    boolean alive = e.ws.isAlive();
-                    if (age > TgConstants.POOL_AGE || !alive) {
-                        AppLog.d("TGProxy", "Pool: discarding stale WS age=" + age + " alive=" + alive);
+                    if (age > TgConstants.POOL_AGE || !e.ws.isAlive()) {
                         e.ws.close();
                         continue;
                     }
-                    AppLog.d("TGProxy", "Pool: returning WS age=" + age + "s");
                     refill(key, tip, doms);
                     return e.ws;
                 }
             }
         }
-        AppLog.d("TGProxy", "Pool: no WS available for key=" + key);
         refill(key, tip, doms);
         return null;
     }

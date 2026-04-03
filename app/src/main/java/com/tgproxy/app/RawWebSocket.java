@@ -228,21 +228,27 @@ public class RawWebSocket {
             }
         }
 
-        // Порядок перебора (SNI+DELAY первым — проверенно работает на WiFi):
-        // 1. SNI+DELAY — фрагментация с задержкой (работает на WiFi)
-        // 2. SNI+DIRECT — без обхода (если DPI нет)
-        // 3. NO_SNI+DIRECT — для мобильной сети (ТСПУ нечего искать)
-        // 4. NO_SNI+DELAY — NO_SNI + фрагментация
-        // 5. FAKE_SNI+DIRECT — подмена SNI
-        // 6. SNI+MOBILE — длинные паузы для медленного DPI
+        // Если relay настроен — пробуем его ПЕРВЫМ (самый надёжный обход ТСПУ)
+        if (relayUrl != null) {
+            try {
+                AppLog.i(TAG, "Trying Cloudflare relay FIRST: " + relayUrl);
+                RawWebSocket ws = connectViaRelay(domain, PROBE_TIMEOUT);
+                workingStrategy = STRATEGY_RELAY;
+                AppLog.i(TAG, "Strategy 'RELAY' WORKS via " + relayUrl + "!");
+                return ws;
+            } catch (WsRedirectException e) {
+                throw e;
+            } catch (Exception e) {
+                AppLog.w(TAG, "RELAY failed: " + e.getMessage() + ", trying other strategies...");
+            }
+        }
 
+        // TLS стратегии (если relay не настроен или не сработал)
         int[][] strategies = {
-            {SNI_NORMAL, FragmentSocket.STRATEGY_DELAY},   // SNI + фрагментация (WiFi)
             {SNI_NORMAL, -2},                              // DIRECT (нет DPI)
+            {SNI_NORMAL, FragmentSocket.STRATEGY_DELAY},   // SNI + фрагментация (WiFi)
             {SNI_NONE,   -2},                              // NO_SNI (мобильная сеть)
-            {SNI_NONE,   FragmentSocket.STRATEGY_DELAY},   // NO_SNI + фрагментация
             {SNI_FAKE,   -2},                              // FAKE_SNI
-            {SNI_NORMAL, FragmentSocket.STRATEGY_MOBILE},  // Длинные паузы
         };
 
         Exception lastError = null;
@@ -293,22 +299,6 @@ public class RawWebSocket {
         } catch (Exception e) {
             AppLog.w(TAG, "DNS_RESOLVE failed: " + e.getMessage());
             lastError = e;
-        }
-
-        // Relay через Cloudflare Worker — последний шанс перед отказом
-        if (relayUrl != null) {
-            try {
-                AppLog.i(TAG, "Trying Cloudflare relay: " + relayUrl);
-                RawWebSocket ws = connectViaRelay(domain, PROBE_TIMEOUT);
-                workingStrategy = STRATEGY_RELAY;
-                AppLog.i(TAG, "Strategy 'RELAY' WORKS via " + relayUrl + "!");
-                return ws;
-            } catch (WsRedirectException e) {
-                throw e;
-            } catch (Exception e) {
-                AppLog.w(TAG, "RELAY failed: " + e.getMessage());
-                lastError = e;
-            }
         }
 
         // Всё провалилось — запомнить IP+домен как заблокированный
