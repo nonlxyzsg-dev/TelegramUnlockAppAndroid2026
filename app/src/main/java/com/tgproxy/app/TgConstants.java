@@ -53,6 +53,7 @@ public final class TgConstants {
         IP_TO_DC.put("91.108.56.100", new int[]{5, 0});
         IP_TO_DC.put("91.108.56.101", new int[]{5, 0});
         IP_TO_DC.put("91.108.56.116", new int[]{5, 0});
+        IP_TO_DC.put("91.108.56.123", new int[]{5, 0});
         IP_TO_DC.put("91.108.56.126", new int[]{5, 0});
         IP_TO_DC.put("149.154.171.5", new int[]{5, 0});
         IP_TO_DC.put("91.108.56.102", new int[]{5, 1});
@@ -78,6 +79,22 @@ public final class TgConstants {
         } catch (Exception e) {
             return 0;
         }
+    }
+
+    /**
+     * Угадать DC по IP-подсети (когда IP нет в IP_TO_DC).
+     * Возвращает DC 1-5 или -1 если не определено.
+     */
+    public static int guessDcByIp(String ip) {
+        if (ip == null) return -1;
+        if (ip.startsWith("149.154.175.")) return 1;  // DC1 и DC3 делят подсеть, берём DC1
+        if (ip.startsWith("149.154.167.") || ip.startsWith("149.154.162.") || ip.startsWith("95.161.76.")) return 2;
+        if (ip.startsWith("149.154.164.") || ip.startsWith("149.154.166.") || ip.startsWith("149.154.165.")) return 4;
+        if (ip.startsWith("91.108.56.")) return 5;
+        if (ip.startsWith("149.154.171.")) return 5;
+        // Если совсем неизвестный — DC2 (главный)
+        if (isTelegramIp(ip)) return 2;
+        return -1;
     }
 
     public static boolean isTelegramIp(String ip) {

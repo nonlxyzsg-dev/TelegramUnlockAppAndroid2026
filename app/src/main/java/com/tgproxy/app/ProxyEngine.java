@@ -234,11 +234,18 @@ public class ProxyEngine {
             int[] info = TgConstants.IP_TO_DC.get(dst);
             dc = info[0];
             isMedia = info[1] == 1;
-            AppLog.d(TAG, "IP_TO_DC fallback: dc=" + dc + " media=" + isMedia);
+        }
+
+        // Если DC не определён — угадываем по подсети
+        if (dc < 1 || dc > 5) {
+            dc = TgConstants.guessDcByIp(dst);
+            if (dc > 0) {
+                AppLog.i(TAG, "Guessed DC=" + dc + " for unknown IP " + dst);
+            }
         }
 
         if (dc < 1 || dc > 5 || !TgConstants.DC_IPS.containsKey(dc)) {
-            AppLog.w(TAG, "Invalid DC=" + dc + ", TCP fallback");
+            AppLog.w(TAG, "Unknown DC for " + dst + ", TCP fallback");
             tcpFallback(client, in, out, dst, port, init);
             return;
         }
@@ -343,12 +350,23 @@ public class ProxyEngine {
             if (TgConstants.DC_IPS.containsKey(dc)) {
                 init = CryptoUtils.patchDc(init, isMedia ? dc : -dc);
                 patched = true;
-                AppLog.d(TAG, "Patched DC: " + dc + " media=" + isMedia);
+            }
+        }
+
+        // Если DC не определён — угадываем по подсети
+        if (dc < 1 || dc > 5) {
+            dc = TgConstants.guessDcByIp(dst);
+            if (dc > 0) {
+                AppLog.i(TAG, "Guessed DC=" + dc + " for unknown IP " + dst);
+                if (TgConstants.DC_IPS.containsKey(dc)) {
+                    init = CryptoUtils.patchDc(init, dc);
+                    patched = true;
+                }
             }
         }
 
         if (dc < 1 || dc > 5 || !TgConstants.DC_IPS.containsKey(dc)) {
-            AppLog.w(TAG, "Invalid DC=" + dc + ", TCP fallback");
+            AppLog.w(TAG, "Unknown DC for " + dst + ", TCP fallback");
             tcpFallback(client, in, out, dst, port, init);
             return;
         }

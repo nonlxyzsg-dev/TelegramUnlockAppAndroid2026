@@ -5,12 +5,6 @@
  *   → проксирует в wss://kws{N}.web.telegram.org/apiws
  *
  * ТСПУ видит TLS к Cloudflare (не к Telegram) — нет причин блокировать.
- *
- * Деплой:
- *   1. Зарегистрируйтесь на https://dash.cloudflare.com
- *   2. Workers & Pages → Create Worker
- *   3. Вставьте этот код → Deploy
- *   4. В приложении укажите Relay URL: https://your-worker.workers.dev
  */
 
 export default {
@@ -41,25 +35,72 @@ export default {
       return new Response('WebSocket upgrade required', { status: 426 });
     }
 
-    // Проксируем WebSocket в Telegram
-    // Cloudflare автоматически обрабатывает WS-проксирование при fetch с Upgrade
-    const newHeaders = new Headers();
-    newHeaders.set('Host', targetHost);
-    newHeaders.set('Upgrade', 'websocket');
-    newHeaders.set('Connection', 'Upgrade');
+    // Создаём пару WebSocket: client ↔ server
+    const [clientWs, serverWs] = Object.values(new WebSocketPair());
 
-    // Копируем WS-заголовки
-    for (const key of ['Sec-WebSocket-Key', 'Sec-WebSocket-Version', 'Sec-WebSocket-Protocol']) {
-      const val = request.headers.get(key);
-      if (val) newHeaders.set(key, val);
+    // Подключаемся к Telegram через fetch (Cloudflare Workers поддерживают WS через fetch)
+    const telegramResp = await fetch(targetUrl, {
+      headers: {
+        'Host': targetHost,
+        'Upgrade': 'websocket',
+        'Connection': 'Upgrade',
+        'Sec-WebSocket-Key': request.headers.get('Sec-WebSocket-Key') || '',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Protocol': request.headers.get('Sec-WebSocket-Protocol') || 'binary',
+        'User-Agent': request.headers.get('User-Agent') || 'Mozilla/5.0',
+        'Origin': 'https://web.telegram.org',
+      },
+    });
+
+    // Проверяем что Telegram принял WebSocket
+    const telegramWs = telegramResp.webSocket;
+    if (!telegramWs) {
+      serverWs.close();
+      return new Response('Telegram did not accept WebSocket (HTTP ' + telegramResp.status + ')', { status: 502 });
     }
 
-    // User-Agent как у браузера
-    newHeaders.set('User-Agent', request.headers.get('User-Agent') || 'Mozilla/5.0');
-    newHeaders.set('Origin', 'https://web.telegram.org');
+    // Принимаем оба WebSocket
+    serverWs.accept();
+    telegramWs.accept();
 
-    return fetch(targetUrl, {
-      headers: newHeaders,
+    // Пробрасываем данные: клиент → Telegram
+    serverWs.addEventListener('message', event => {
+      try {
+        telegramWs.send(event.data);
+      } catch (e) {
+        serverWs.close(1011, 'Telegram send error');
+      }
+    });
+
+    serverWs.addEventListener('close', event => {
+      try { telegramWs.close(event.code, event.reason); } catch (e) {}
+    });
+
+    serverWs.addEventListener('error', event => {
+      try { telegramWs.close(1011, 'Client error'); } catch (e) {}
+    });
+
+    // Пробрасываем данные: Telegram → клиент
+    telegramWs.addEventListener('message', event => {
+      try {
+        serverWs.send(event.data);
+      } catch (e) {
+        telegramWs.close(1011, 'Client send error');
+      }
+    });
+
+    telegramWs.addEventListener('close', event => {
+      try { serverWs.close(event.code, event.reason); } catch (e) {}
+    });
+
+    telegramWs.addEventListener('error', event => {
+      try { serverWs.close(1011, 'Telegram error'); } catch (e) {}
+    });
+
+    // Возвращаем клиентский WebSocket
+    return new Response(null, {
+      status: 101,
+      webSocket: clientWs,
     });
   },
 };
