@@ -17,8 +17,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
@@ -38,15 +40,20 @@ public class DiagnosticsUtil {
     public static class DcTestResult {
         public int dc;
         public String ip;
-        public long icmpPing = -1;     // ICMP ping (isReachable)
-        public long tcpPing = -1;      // TCP SYN к порту 443
-        public long tcpPing80 = -1;    // TCP SYN к порту 80
-        public long tlsPing = -1;      // TLS handshake (без WS)
-        public String tlsProto = null; // TLS версия протокола
-        public String tlsError = null; // Ошибка TLS
-        public long wsPing = -1;       // Полный WS handshake
-        public int wsStatus = 0;       // HTTP status WS upgrade
-        public String wsError = null;  // Ошибка WS
+        public long icmpPing = -1;       // ICMP ping (isReachable)
+        public long tcpPing = -1;        // TCP SYN к порту 443
+        public long tcpPing80 = -1;      // TCP SYN к порту 80
+        public long tlsPing = -1;        // TLS handshake с SNI
+        public String tlsProto = null;   // TLS версия протокола
+        public String tlsError = null;   // Ошибка TLS
+        public long tlsNoSniPing = -1;   // TLS handshake БЕЗ SNI
+        public String tlsNoSniProto = null;
+        public String tlsNoSniError = null;
+        public long wsPing = -1;         // WS handshake через TLS
+        public int wsStatus = 0;         // HTTP status WS upgrade
+        public long plainWsPing = -1;    // Plain WS на порт 80
+        public int plainWsStatus = 0;    // HTTP status plain WS
+        public String wsError = null;    // Ошибка WS
         public String traceRoute = null; // Traceroute (хопы)
 
         public DcTestResult(int dc, String ip) {
@@ -211,19 +218,142 @@ public class DiagnosticsUtil {
         }
     }
 
-    /** Полный WS handshake (TLS + HTTP Upgrade) */
+    /** Простой WS handshake — одна попытка без перебора стратегий (для диагностики) */
     public static long[] testWsHandshake(String ip, String domain, int timeoutMs) {
         long start = System.currentTimeMillis();
         try {
-            RawWebSocket ws = RawWebSocket.connect(ip, domain, timeoutMs);
+            TrustManager[] trustAll = new TrustManager[]{
+                new X509TrustManager() {
+                    public java.security.cert.X509Certificate[] getAcceptedIssuers() {
+                        return new java.security.cert.X509Certificate[0];
+                    }
+                    public void checkClientTrusted(java.security.cert.X509Certificate[] c, String a) {}
+                    public void checkServerTrusted(java.security.cert.X509Certificate[] c, String a) {}
+                }
+            };
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(null, trustAll, new SecureRandom());
+            SSLSocketFactory factory = ctx.getSocketFactory();
+
+            Socket raw = new Socket();
+            raw.connect(new InetSocketAddress(ip, 443), timeoutMs);
+            raw.setSoTimeout(timeoutMs);
+
+            SSLSocket ssl = (SSLSocket) factory.createSocket(raw, domain, 443, true);
+            ssl.setUseClientMode(true);
+
+            // ALPN — только http/1.1 (h2 ломает WS upgrade)
+            if (Build.VERSION.SDK_INT >= 29) {
+                javax.net.ssl.SSLParameters params = ssl.getSSLParameters();
+                params.setApplicationProtocols(new String[]{"http/1.1"});
+                ssl.setSSLParameters(params);
+            }
+
+            ssl.startHandshake();
+
+            // WS upgrade
+            byte[] keyBytes = new byte[16];
+            new SecureRandom().nextBytes(keyBytes);
+            String wsKey = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP);
+
+            String req = "GET /apiws HTTP/1.1\r\n" +
+                    "Host: " + domain + "\r\n" +
+                    "Upgrade: websocket\r\n" +
+                    "Connection: Upgrade\r\n" +
+                    "Sec-WebSocket-Key: " + wsKey + "\r\n" +
+                    "Sec-WebSocket-Version: 13\r\n" +
+                    "Sec-WebSocket-Protocol: binary\r\n" +
+                    "Origin: https://web.telegram.org\r\n" +
+                    "\r\n";
+
+            OutputStream out = ssl.getOutputStream();
+            out.write(req.getBytes("UTF-8"));
+            out.flush();
+
+            InputStream in = ssl.getInputStream();
+            int statusCode = 0;
+            boolean firstLine = true;
+            StringBuilder lineBuf = new StringBuilder();
+            int c;
+            while ((c = in.read()) != -1) {
+                if (c == '\n') {
+                    String line = lineBuf.toString().trim();
+                    if (line.isEmpty()) break;
+                    if (firstLine) {
+                        String[] parts = line.split(" ", 3);
+                        if (parts.length >= 2) {
+                            try { statusCode = Integer.parseInt(parts[1]); } catch (NumberFormatException ignored) {}
+                        }
+                        firstLine = false;
+                    }
+                    lineBuf.setLength(0);
+                } else {
+                    lineBuf.append((char) c);
+                }
+            }
+
             long elapsed = System.currentTimeMillis() - start;
-            ws.close();
-            return new long[]{elapsed, 101};
-        } catch (RawWebSocket.WsRedirectException e) {
-            long elapsed = System.currentTimeMillis() - start;
-            return new long[]{elapsed, e.statusCode};
+            ssl.close();
+            return new long[]{elapsed, statusCode};
         } catch (Exception e) {
-            AppLog.d(TAG, "WS test failed " + ip + " " + domain + ": " + e.getMessage());
+            AppLog.d(TAG, "WS diag test failed " + ip + " " + domain + ": " + e.getMessage());
+            return new long[]{-1, 0};
+        }
+    }
+
+    /** Тест plain WS на порт 80 (без TLS) — для диагностики */
+    public static long[] testPlainWsHandshake(String ip, String domain, int timeoutMs) {
+        long start = System.currentTimeMillis();
+        try {
+            Socket raw = new Socket();
+            raw.connect(new InetSocketAddress(ip, 80), timeoutMs);
+            raw.setSoTimeout(timeoutMs);
+
+            byte[] keyBytes = new byte[16];
+            new SecureRandom().nextBytes(keyBytes);
+            String wsKey = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP);
+
+            String req = "GET /apiws HTTP/1.1\r\n" +
+                    "Host: " + domain + "\r\n" +
+                    "Upgrade: websocket\r\n" +
+                    "Connection: Upgrade\r\n" +
+                    "Sec-WebSocket-Key: " + wsKey + "\r\n" +
+                    "Sec-WebSocket-Version: 13\r\n" +
+                    "Sec-WebSocket-Protocol: binary\r\n" +
+                    "Origin: http://web.telegram.org\r\n" +
+                    "\r\n";
+
+            OutputStream out = raw.getOutputStream();
+            out.write(req.getBytes("UTF-8"));
+            out.flush();
+
+            InputStream in = raw.getInputStream();
+            int statusCode = 0;
+            boolean firstLine = true;
+            StringBuilder lineBuf = new StringBuilder();
+            int c;
+            while ((c = in.read()) != -1) {
+                if (c == '\n') {
+                    String line = lineBuf.toString().trim();
+                    if (line.isEmpty()) break;
+                    if (firstLine) {
+                        String[] parts = line.split(" ", 3);
+                        if (parts.length >= 2) {
+                            try { statusCode = Integer.parseInt(parts[1]); } catch (NumberFormatException ignored) {}
+                        }
+                        firstLine = false;
+                    }
+                    lineBuf.setLength(0);
+                } else {
+                    lineBuf.append((char) c);
+                }
+            }
+
+            long elapsed = System.currentTimeMillis() - start;
+            raw.close();
+            return new long[]{elapsed, statusCode};
+        } catch (Exception e) {
+            AppLog.d(TAG, "Plain WS diag test failed " + ip + " " + domain + ": " + e.getMessage());
             return new long[]{-1, 0};
         }
     }
@@ -366,10 +496,119 @@ public class DiagnosticsUtil {
         }
     }
 
-    // === Полная диагностика ===
+    // === Полная диагностика (параллельно по всем DC) ===
+
+    /** Тестирует один DC — все уровни последовательно */
+    private static DcTestResult testSingleDc(int dc, String ip) {
+        String domain = "kws" + dc + ".web.telegram.org";
+        DcTestResult dr = new DcTestResult(dc, ip);
+
+        // 1. ICMP ping
+        dr.icmpPing = testIcmpPing(ip, 2000);
+
+        // 2. TCP SYN port 443
+        dr.tcpPing = testTcpConnect(ip, 443, 3000);
+
+        // 3. TCP SYN port 80
+        dr.tcpPing80 = testTcpConnect(ip, 80, 3000);
+
+        // 4. TLS handshake (с настоящим SNI) — только если TCP:443 прошёл
+        if (dr.tcpPing >= 0) {
+            Object[] tlsResult = testTlsHandshake(ip, domain, 5000);
+            dr.tlsPing = (long) tlsResult[0];
+            dr.tlsProto = (String) tlsResult[1];
+            dr.tlsError = (String) tlsResult[3];
+        }
+
+        // 5. TLS без SNI — определяет блокировку по SNI vs по IP/протоколу
+        if (dr.tcpPing >= 0) {
+            Object[] tlsNoSni = testTlsNoSni(ip, 5000);
+            dr.tlsNoSniPing = (long) tlsNoSni[0];
+            dr.tlsNoSniProto = (String) tlsNoSni[1];
+            dr.tlsNoSniError = (String) tlsNoSni[3];
+        }
+
+        // 6. WS upgrade через TLS — только если TLS прошёл
+        if (dr.tlsPing >= 0) {
+            long[] wsResult = testWsHandshake(ip, domain, 5000);
+            dr.wsPing = wsResult[0];
+            dr.wsStatus = (int) wsResult[1];
+        }
+
+        // 7. Plain WS на порт 80 (без TLS) — только если TCP:80 прошёл
+        if (dr.tcpPing80 >= 0) {
+            long[] plainWs = testPlainWsHandshake(ip, domain, 5000);
+            dr.plainWsPing = plainWs[0];
+            dr.plainWsStatus = (int) plainWs[1];
+        }
+
+        return dr;
+    }
+
+    /** Форматирует результат одного DC */
+    private static String formatDcResult(DcTestResult dr) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n══ DC").append(dr.dc).append(" — ").append(dr.ip).append(" ══\n");
+
+        // ICMP
+        sb.append("  ICMP ping:     ");
+        if (dr.icmpPing >= 0) sb.append("✅ ").append(dr.icmpPing).append(" ms\n");
+        else sb.append("❌ (blocked/no root)\n");
+
+        // TCP:443
+        sb.append("  TCP :443:      ");
+        if (dr.tcpPing >= 0) sb.append("✅ ").append(dr.tcpPing).append(" ms\n");
+        else sb.append("❌ timeout\n");
+
+        // TCP:80
+        sb.append("  TCP :80:       ");
+        if (dr.tcpPing80 >= 0) sb.append("✅ ").append(dr.tcpPing80).append(" ms\n");
+        else sb.append("❌ timeout\n");
+
+        // TLS с SNI
+        if (dr.tcpPing >= 0) {
+            sb.append("  TLS (SNI):     ");
+            if (dr.tlsPing >= 0) {
+                sb.append("✅ ").append(dr.tlsPing).append(" ms")
+                        .append(" [").append(dr.tlsProto).append("]\n");
+            } else {
+                sb.append("❌ ").append(dr.tlsError != null ? dr.tlsError : "timeout").append("\n");
+            }
+        }
+
+        // TLS без SNI
+        if (dr.tcpPing >= 0) {
+            sb.append("  TLS (нет SNI): ");
+            if (dr.tlsNoSniPing >= 0) {
+                sb.append("✅ ").append(dr.tlsNoSniPing).append(" ms")
+                        .append(" [").append(dr.tlsNoSniProto).append("]\n");
+            } else {
+                sb.append("❌ ").append(dr.tlsNoSniError != null ? dr.tlsNoSniError : "timeout").append("\n");
+            }
+        }
+
+        // WS over TLS
+        if (dr.tlsPing >= 0) {
+            sb.append("  WS (TLS):      ");
+            if (dr.wsStatus == 101) sb.append("✅ ").append(dr.wsPing).append(" ms\n");
+            else if (dr.wsStatus > 0) sb.append("⚠️ HTTP ").append(dr.wsStatus).append("\n");
+            else sb.append("❌ заблокирован\n");
+        }
+
+        // Plain WS на порт 80
+        if (dr.tcpPing80 >= 0) {
+            sb.append("  WS (plain:80): ");
+            if (dr.plainWsStatus == 101) sb.append("✅ ").append(dr.plainWsPing).append(" ms\n");
+            else if (dr.plainWsStatus > 0) sb.append("⚠️ HTTP ").append(dr.plainWsStatus).append("\n");
+            else sb.append("❌ не поддерживается\n");
+        }
+
+        return sb.toString();
+    }
 
     public static void runFullDiagnostics(Context ctx, String proxyIp, int proxyPort, DiagCallback callback) {
         executor.submit(() -> {
+            long diagStart = System.currentTimeMillis();
             DiagResult r = new DiagResult();
 
             r.networkType = getNetworkType(ctx);
@@ -399,7 +638,7 @@ public class DiagnosticsUtil {
             }
             sb.append("▶ Интернет: ✅ Есть (1.1.1.1:443 ok)\n");
 
-            // === DNS ===
+            // === DNS (быстро — параллельно) ===
             sb.append("\n── DNS-резолв ──\n");
             for (Map.Entry<Integer, String> entry : TgConstants.DC_IPS.entrySet()) {
                 int dc = entry.getKey();
@@ -409,111 +648,89 @@ public class DiagnosticsUtil {
                 sb.append("    → ").append(resolved).append("\n");
             }
 
-            // === Тест каждого DC ===
-            int dcWsOk = 0, dcTlsOk = 0, dcTcpOk = 0, dcFail = 0;
+            // === Тест всех DC ПАРАЛЛЕЛЬНО ===
+            int dcCount = TgConstants.DC_IPS.size();
+            DcTestResult[] results = new DcTestResult[dcCount];
+            CountDownLatch latch = new CountDownLatch(dcCount);
 
+            int idx = 0;
             for (Map.Entry<Integer, String> entry : TgConstants.DC_IPS.entrySet()) {
-                int dc = entry.getKey();
-                String ip = entry.getValue();
-                String domain = "kws" + dc + ".web.telegram.org";
-
-                DcTestResult dr = new DcTestResult(dc, ip);
-
-                sb.append("\n══ DC").append(dc).append(" — ").append(ip).append(" ══\n");
-
-                // 1. ICMP ping
-                dr.icmpPing = testIcmpPing(ip, 3000);
-                sb.append("  ICMP ping: ");
-                if (dr.icmpPing >= 0) {
-                    sb.append("✅ ").append(dr.icmpPing).append(" ms\n");
-                } else {
-                    sb.append("❌ (blocked/no root)\n");
-                }
-
-                // 2. TCP SYN port 443
-                dr.tcpPing = testTcpConnect(ip, 443, 5000);
-                sb.append("  TCP :443:  ");
-                if (dr.tcpPing >= 0) {
-                    sb.append("✅ ").append(dr.tcpPing).append(" ms\n");
-                    dcTcpOk++;
-                } else {
-                    sb.append("❌ timeout\n");
-                    dcFail++;
-                }
-
-                // 3. TCP SYN port 80
-                dr.tcpPing80 = testTcpConnect(ip, 80, 5000);
-                sb.append("  TCP :80:   ");
-                if (dr.tcpPing80 >= 0) {
-                    sb.append("✅ ").append(dr.tcpPing80).append(" ms\n");
-                } else {
-                    sb.append("❌ timeout\n");
-                }
-
-                // 4. TLS handshake (с настоящим SNI)
-                if (dr.tcpPing >= 0) {
-                    Object[] tlsResult = testTlsHandshake(ip, domain, 8000);
-                    dr.tlsPing = (long) tlsResult[0];
-                    dr.tlsProto = (String) tlsResult[1];
-                    dr.tlsError = (String) tlsResult[3];
-
-                    sb.append("  TLS (SNI): ");
-                    if (dr.tlsPing >= 0) {
-                        sb.append("✅ ").append(dr.tlsPing).append(" ms")
-                                .append(" [").append(dr.tlsProto).append("]\n");
-                        dcTlsOk++;
-                    } else {
-                        sb.append("❌ ").append(dr.tlsError != null ? dr.tlsError : "timeout").append("\n");
+                final int dc = entry.getKey();
+                final String ip = entry.getValue();
+                final int slot = idx++;
+                executor.submit(() -> {
+                    try {
+                        results[slot] = testSingleDc(dc, ip);
+                    } catch (Exception e) {
+                        results[slot] = new DcTestResult(dc, ip);
+                    } finally {
+                        latch.countDown();
                     }
-
-                    // 5. TLS без SNI (определяет: DPI по SNI или по протоколу)
-                    Object[] tlsNoSni = testTlsNoSni(ip, 8000);
-                    long noSniPing = (long) tlsNoSni[0];
-                    String noSniError = (String) tlsNoSni[3];
-
-                    sb.append("  TLS (нет SNI): ");
-                    if (noSniPing >= 0) {
-                        sb.append("✅ ").append(noSniPing).append(" ms")
-                                .append(" [").append(tlsNoSni[1]).append("]\n");
-                    } else {
-                        sb.append("❌ ").append(noSniError != null ? noSniError : "timeout").append("\n");
-                    }
-                }
-
-                // 6. WebSocket upgrade
-                if (dr.tcpPing >= 0) {
-                    long[] wsResult = testWsHandshake(ip, domain, 10000);
-                    dr.wsPing = wsResult[0];
-                    dr.wsStatus = (int) wsResult[1];
-
-                    sb.append("  WS upgrade: ");
-                    if (dr.wsStatus == 101) {
-                        sb.append("✅ ").append(dr.wsPing).append(" ms\n");
-                        dcWsOk++;
-                    } else if (dr.wsStatus > 0) {
-                        sb.append("⚠️ HTTP ").append(dr.wsStatus).append(" (").append(dr.wsPing).append(" ms)\n");
-                    } else {
-                        sb.append("❌ заблокирован\n");
-                    }
-                }
-
-                r.dcResults.add(dr);
+                });
             }
 
-            // === Traceroute (только к DC2 — самый надёжный) ===
+            // Ждём все DC (макс 30 секунд)
+            try {
+                latch.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {}
+
+            // === Форматируем результаты (по порядку DC) ===
+            int dcWsOk = 0, dcTlsOk = 0, dcTcpOk = 0, dcPlainWsOk = 0;
+
+            // Сортируем по DC номеру
+            java.util.Arrays.sort(results, (a, b) -> {
+                if (a == null) return 1;
+                if (b == null) return -1;
+                return Integer.compare(a.dc, b.dc);
+            });
+
+            for (DcTestResult dr : results) {
+                if (dr == null) continue;
+                sb.append(formatDcResult(dr));
+                r.dcResults.add(dr);
+                if (dr.wsStatus == 101) dcWsOk++;
+                if (dr.tlsPing >= 0) dcTlsOk++;
+                if (dr.tcpPing >= 0) dcTcpOk++;
+                if (dr.plainWsStatus == 101) dcPlainWsOk++;
+            }
+
+            // === Traceroute (параллельно с прокси-тестом) ===
+            final String[] traceResult = {null};
+            final long[] proxyResult = {-3};
+            CountDownLatch latch2 = new CountDownLatch(2);
+
+            executor.submit(() -> {
+                try {
+                    traceResult[0] = testTraceroute(TgConstants.DC_IPS.get(2), 12);
+                } finally {
+                    latch2.countDown();
+                }
+            });
+
+            executor.submit(() -> {
+                try {
+                    if (r.proxyRunning) {
+                        proxyResult[0] = testViaProxy(proxyIp, proxyPort,
+                                TgConstants.DC_IPS.get(2), 8000);
+                    }
+                } finally {
+                    latch2.countDown();
+                }
+            });
+
+            try {
+                latch2.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {}
+
             sb.append("\n── Traceroute к DC2 (").append(TgConstants.DC_IPS.get(2)).append(") ──\n");
-            String trace = testTraceroute(TgConstants.DC_IPS.get(2), 15);
-            sb.append(trace);
+            sb.append(traceResult[0] != null ? traceResult[0] : "таймаут\n");
 
             // === Тест через наш прокси ===
             if (r.proxyRunning) {
                 sb.append("\n── Тест через наш прокси ──\n");
-                long proxyResult = testViaProxy(proxyIp, proxyPort,
-                        TgConstants.DC_IPS.get(2), 10000);
-
-                if (proxyResult > 0) {
-                    sb.append("  ✅ Двусторонняя связь — ").append(proxyResult).append(" ms\n");
-                } else if (proxyResult == -2) {
+                if (proxyResult[0] > 0) {
+                    sb.append("  ✅ Двусторонняя связь — ").append(proxyResult[0]).append(" ms\n");
+                } else if (proxyResult[0] == -2) {
                     sb.append("  ❌ Данные уходят, ответ НЕ приходит (однонаправленно)\n");
                 } else {
                     sb.append("  ❌ Прокси не отвечает\n");
@@ -523,24 +740,32 @@ public class DiagnosticsUtil {
             }
 
             // === Вывод ===
+            long elapsed = (System.currentTimeMillis() - diagStart) / 1000;
             sb.append("\n═══════════════════════════════\n");
-            sb.append("  ЗАКЛЮЧЕНИЕ\n");
+            sb.append("  ЗАКЛЮЧЕНИЕ (").append(elapsed).append(" сек)\n");
             sb.append("═══════════════════════════════\n");
 
             if (dcWsOk > 0) {
-                sb.append("✅ WebSocket работает на ").append(dcWsOk).append("/5 DC\n");
+                sb.append("✅ WS (TLS) работает на ").append(dcWsOk).append("/5 DC\n");
                 sb.append("   → Прямое подключение возможно\n");
-            } else if (dcTlsOk > 0) {
-                sb.append("⚠️ TLS проходит, но WS блокируется\n");
-                sb.append("   → DPI фильтрует WebSocket upgrade\n");
-                sb.append("   → Попробуйте внешний прокси\n");
-            } else if (dcTcpOk > 0) {
-                sb.append("⚠️ TCP проходит, TLS блокируется\n");
-                sb.append("   → DPI блокирует TLS к Telegram IP\n");
-                sb.append("   → Нужен внешний прокси\n");
-            } else {
-                sb.append("❌ Telegram IP полностью недоступны\n");
-                sb.append("   → Нужен VPN или внешний прокси\n");
+            }
+            if (dcPlainWsOk > 0) {
+                sb.append("✅ WS (plain:80) работает на ").append(dcPlainWsOk).append("/5 DC\n");
+                sb.append("   → Обход TLS-блокировки через порт 80\n");
+            }
+            if (dcWsOk == 0 && dcPlainWsOk == 0) {
+                if (dcTlsOk > 0) {
+                    sb.append("⚠️ TLS проходит, но WS блокируется\n");
+                    sb.append("   → DPI фильтрует WebSocket upgrade\n");
+                    sb.append("   → Попробуйте внешний прокси\n");
+                } else if (dcTcpOk > 0) {
+                    sb.append("⚠️ TCP проходит, TLS блокируется\n");
+                    sb.append("   → DPI блокирует TLS к Telegram IP\n");
+                    sb.append("   → Приложение попробует plain WS:80 и DNS-резолв\n");
+                } else {
+                    sb.append("❌ Telegram IP полностью недоступны\n");
+                    sb.append("   → Нужен VPN или внешний прокси\n");
+                }
             }
 
             r.summary = sb.toString();
