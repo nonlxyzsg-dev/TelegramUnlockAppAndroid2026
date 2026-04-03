@@ -64,6 +64,15 @@ public class RawWebSocket {
         this.out = new java.io.BufferedOutputStream(socket.getOutputStream(), TgConstants.BUF);
     }
 
+    private static final String[] USER_AGENTS = {
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+    };
+
     public static RawWebSocket connect(String ip, String domain, int timeout) throws Exception {
         Socket raw = new Socket();
         raw.connect(new java.net.InetSocketAddress(ip, 443), timeout);
@@ -90,9 +99,7 @@ public class RawWebSocket {
                 "Sec-WebSocket-Version: 13\r\n" +
                 "Sec-WebSocket-Protocol: binary\r\n" +
                 "Origin: https://web.telegram.org\r\n" +
-                "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-                "AppleWebKit/537.36 (KHTML, like Gecko) " +
-                "Chrome/131.0.0.0 Safari/537.36\r\n" +
+                "User-Agent: " + USER_AGENTS[rng.nextInt(USER_AGENTS.length)] + "\r\n" +
                 "\r\n";
 
         ws.out.write(req.getBytes("UTF-8"));

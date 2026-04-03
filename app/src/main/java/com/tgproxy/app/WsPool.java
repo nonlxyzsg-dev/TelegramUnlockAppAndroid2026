@@ -132,14 +132,19 @@ public class WsPool {
                     if (need <= 0) break;
 
                     RawWebSocket ws = null;
-                    for (String domain : doms) {
-                        try {
-                            ws = RawWebSocket.connect(tip, domain, 8000);
-                            break;
-                        } catch (RawWebSocket.WsRedirectException e) {
-                            continue;
-                        } catch (Exception e) {
-                            break;
+                    for (int retry = 0; retry < 2 && ws == null; retry++) {
+                        for (String domain : doms) {
+                            try {
+                                ws = RawWebSocket.connect(tip, domain, 8000);
+                                break;
+                            } catch (RawWebSocket.WsRedirectException e) {
+                                continue;
+                            } catch (Exception e) {
+                                break;
+                            }
+                        }
+                        if (ws == null && retry < 1) {
+                            try { Thread.sleep(1000); } catch (InterruptedException ignored) { break; }
                         }
                     }
 

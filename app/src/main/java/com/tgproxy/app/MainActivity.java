@@ -131,6 +131,26 @@ public class MainActivity extends AppCompatActivity {
         TextView tvGithub = findViewById(R.id.tv_github);
         tvTgChannel.setOnClickListener(v -> openLink("https://t.me/jar_with_neurons"));
         tvGithub.setOnClickListener(v -> openLink("https://github.com/nonlxyzsg-dev/TelegramUnlockAppAndroid2026"));
+
+        TextView tvDiagResult = findViewById(R.id.tv_diag_result);
+        Button btnDiagnose = findViewById(R.id.btn_diagnose);
+        btnDiagnose.setOnClickListener(v -> {
+            btnDiagnose.setEnabled(false);
+            tvDiagResult.setText("\u23F3 \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430...");
+            tvDiagResult.setTextColor(0xFFAAAA00);
+
+            ProxyService svc = ProxyService.getInstance();
+            String proxyIp = svc != null ? svc.getIp() : "127.0.0.1";
+            int proxyPort = svc != null ? svc.getPort() : 1080;
+
+            DiagnosticsUtil.runFullDiagnostics(this, proxyIp, proxyPort, result -> {
+                handler.post(() -> {
+                    tvDiagResult.setText(result.summary);
+                    tvDiagResult.setTextColor(0xFFE0E0E0);
+                    btnDiagnose.setEnabled(true);
+                });
+            });
+        });
     }
 
     private void openLink(String url) {

@@ -7,15 +7,15 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkRequest;
-import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkRequest;
+import android.net.wifi.WifiManager;
 
 import androidx.preference.PreferenceManager;
 
@@ -29,10 +29,10 @@ public class ProxyService extends Service {
     private ProxyEngine engine;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
+    private ConnectivityManager.NetworkCallback networkCallback;
     private Handler handler;
     private int port;
     private String boundIp = "127.0.0.1";
-    private ConnectivityManager.NetworkCallback networkCallback;
 
     private static ProxyService instance;
 
@@ -73,37 +73,10 @@ public class ProxyService extends Service {
         wakeLock.acquire();
 
         WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
-        if (wm != null) {
-            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "TGProxy::WiFi");
-            wifiLock.setReferenceCounted(false);
-            wifiLock.acquire();
-        }
+        wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "TGProxy::WifiLock");
+        wifiLock.acquire();
 
         registerNetworkCallback();
-    }
-
-    private void registerNetworkCallback() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            if (cm == null) return;
-            NetworkRequest request = new NetworkRequest.Builder().build();
-            networkCallback = new ConnectivityManager.NetworkCallback() {
-                @Override
-                public void onAvailable(Network network) {
-                    if (engine != null) {
-                        engine.refreshPool();
-                    }
-                }
-
-                @Override
-                public void onLost(Network network) {
-                    if (engine != null) {
-                        engine.clearPool();
-                    }
-                }
-            };
-            cm.registerNetworkCallback(request, networkCallback);
-        }
     }
 
     @Override
@@ -161,12 +134,7 @@ public class ProxyService extends Service {
         if (wifiLock != null && wifiLock.isHeld()) {
             wifiLock.release();
         }
-        if (networkCallback != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            if (cm != null) {
-                cm.unregisterNetworkCallback(networkCallback);
-            }
-        }
+        unregisterNetworkCallback();
         stopForeground(true);
         super.onDestroy();
     }
@@ -235,5 +203,39 @@ public class ProxyService extends Service {
 
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.notify(NOTIF_ID, n);
+    }
+
+    private void registerNetworkCallback() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    if (engine != null) {
+                        engine.refreshPool();
+                    }
+                }
+
+                @Override
+                public void onLost(Network network) {
+                    if (engine != null) {
+                        engine.clearPool();
+                    }
+                }
+            };
+            cm.registerNetworkCallback(new NetworkRequest.Builder().build(), networkCallback);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void unregisterNetworkCallback() {
+        try {
+            if (networkCallback != null) {
+                ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                cm.unregisterNetworkCallback(networkCallback);
+                networkCallback = null;
+            }
+        } catch (Exception ignored) {
+        }
     }
 }
