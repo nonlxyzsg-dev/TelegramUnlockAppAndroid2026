@@ -79,10 +79,31 @@ public class RawWebSocket {
     private static volatile int workingStrategy = -1;
     // IP которые заблокированы по TLS — не тратим время на перебор
     private static final java.util.Set<String> blockedIps = java.util.concurrent.ConcurrentHashMap.newKeySet();
-    // Стратегии работы с SNI (не TCP-фрагментация, а изменение содержимого TLS)
-    private static final int SNI_NORMAL = 0;   // Настоящий SNI (kws*.web.telegram.org)
-    private static final int SNI_NONE = 1;     // Без SNI вообще
-    private static final int SNI_FAKE = 2;     // Фейковый SNI (www.google.com)
+
+    // === Upstream proxy (внешний прокси для обхода IP-блокировки) ===
+    public static final int PROXY_NONE = 0;
+    public static final int PROXY_HTTP = 1;    // HTTP CONNECT
+    public static final int PROXY_SOCKS5 = 2;  // SOCKS5
+
+    private static volatile int upstreamProxyType = PROXY_NONE;
+    private static volatile String upstreamProxyHost = null;
+    private static volatile int upstreamProxyPort = 0;
+
+    /** Настроить upstream proxy. Вызывается из MainActivity при старте. */
+    public static void setUpstreamProxy(int type, String host, int port) {
+        upstreamProxyType = type;
+        upstreamProxyHost = host;
+        upstreamProxyPort = port;
+        // Сбросить кэш стратегий при смене прокси
+        workingStrategy = -1;
+        blockedIps.clear();
+        if (type != PROXY_NONE) {
+            AppLog.i(TAG, "Upstream proxy: " + (type == PROXY_HTTP ? "HTTP" : "SOCKS5")
+                    + " " + host + ":" + port);
+        } else {
+            AppLog.i(TAG, "Upstream proxy: disabled");
+        }
+    }
 
     // Таймаут при переборе стратегий (мс)
     private static final int PROBE_TIMEOUT = 10000;
@@ -96,6 +117,11 @@ public class RawWebSocket {
     };
 
     public static RawWebSocket connect(String ip, String domain, int timeout) throws Exception {
+        // Если настроен upstream proxy — подключаемся через него
+        if (upstreamProxyType != PROXY_NONE && upstreamProxyHost != null) {
+            return connectViaUpstreamProxy(ip, domain, timeout);
+        }
+
         // Если этот IP заблокирован по TLS — сразу exception, пусть идёт tcpFallback
         if (blockedIps.contains(ip)) {
             throw new IOException("IP " + ip + " blocked (TLS), using TCP fallback");
@@ -352,6 +378,196 @@ public class RawWebSocket {
             throw new WsRedirectException(statusCode);
         }
         throw new IOException("WS handshake failed: " + statusCode + " via " + desc);
+    }
+
+    /**
+     * Подключение через upstream proxy (HTTP CONNECT или SOCKS5).
+     * ТСПУ блокирует по IP — через внешний прокси идём в обход.
+     */
+    private static RawWebSocket connectViaUpstreamProxy(String ip, String domain, int timeout) throws Exception {
+        AppLog.d(TAG, "WS: connecting via upstream proxy " + upstreamProxyHost + ":" + upstreamProxyPort
+                + " to " + domain + ":443");
+
+        Socket raw = new Socket();
+        raw.connect(new java.net.InetSocketAddress(upstreamProxyHost, upstreamProxyPort), timeout);
+        raw.setSoTimeout(timeout);
+        raw.setTcpNoDelay(true);
+
+        if (upstreamProxyType == PROXY_HTTP) {
+            tunnelHttpConnect(raw, domain, 443);
+        } else if (upstreamProxyType == PROXY_SOCKS5) {
+            tunnelSocks5(raw, domain, 443);
+        }
+
+        AppLog.d(TAG, "WS: upstream tunnel established, starting TLS");
+
+        // TLS поверх туннеля — используем настоящий SNI (прокси уже скрывает IP)
+        SSLSocket ssl = (SSLSocket) sslFactory.createSocket(raw, domain, 443, true);
+        ssl.setUseClientMode(true);
+
+        // Chrome-like fingerprint
+        try {
+            String[] protocols = ssl.getSupportedProtocols();
+            java.util.List<String> preferred = new java.util.ArrayList<>();
+            for (String p : protocols) {
+                if (p.equals("TLSv1.3")) preferred.add(0, p);
+                else if (p.equals("TLSv1.2")) preferred.add(p);
+            }
+            if (!preferred.isEmpty()) {
+                ssl.setEnabledProtocols(preferred.toArray(new String[0]));
+            }
+        } catch (Exception ignored) {}
+
+        ssl.startHandshake();
+        AppLog.d(TAG, "WS: TLS via proxy OK, proto=" + ssl.getSession().getProtocol());
+
+        RawWebSocket ws = new RawWebSocket(ssl);
+
+        byte[] keyBytes = new byte[16];
+        rng.nextBytes(keyBytes);
+        String wsKey = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP);
+
+        String req = "GET /apiws HTTP/1.1\r\n" +
+                "Host: " + domain + "\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Key: " + wsKey + "\r\n" +
+                "Sec-WebSocket-Version: 13\r\n" +
+                "Sec-WebSocket-Protocol: binary\r\n" +
+                "Origin: https://web.telegram.org\r\n" +
+                "User-Agent: " + USER_AGENTS[rng.nextInt(USER_AGENTS.length)] + "\r\n" +
+                "\r\n";
+
+        ws.out.write(req.getBytes("UTF-8"));
+        ws.out.flush();
+
+        int statusCode = 0;
+        boolean firstLine = true;
+        while (true) {
+            String line = readLine(ws.in);
+            if (line == null || line.isEmpty()) break;
+            if (firstLine) {
+                String[] parts = line.split(" ", 3);
+                if (parts.length >= 2) {
+                    try { statusCode = Integer.parseInt(parts[1]); } catch (NumberFormatException ignored) {}
+                }
+                firstLine = false;
+            }
+        }
+
+        AppLog.d(TAG, "WS: handshake via proxy status=" + statusCode);
+
+        if (statusCode == 101) {
+            ssl.setSoTimeout(0);
+            return ws;
+        }
+
+        ws.closeQuiet();
+        if (statusCode >= 301 && statusCode <= 308) {
+            throw new WsRedirectException(statusCode);
+        }
+        throw new IOException("WS via proxy failed: " + statusCode);
+    }
+
+    /** HTTP CONNECT tunnel через HTTP-прокси */
+    private static void tunnelHttpConnect(Socket sock, String host, int port) throws IOException {
+        OutputStream out = sock.getOutputStream();
+        InputStream in = sock.getInputStream();
+
+        String connectReq = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n" +
+                "Host: " + host + ":" + port + "\r\n" +
+                "Proxy-Connection: keep-alive\r\n" +
+                "\r\n";
+
+        out.write(connectReq.getBytes("UTF-8"));
+        out.flush();
+
+        // Читаем ответ прокси
+        String statusLine = readLine(in);
+        if (statusLine == null) {
+            throw new IOException("HTTP proxy: no response");
+        }
+        AppLog.d(TAG, "HTTP proxy response: " + statusLine);
+
+        // Парсим статус
+        String[] parts = statusLine.split(" ", 3);
+        int status = 0;
+        if (parts.length >= 2) {
+            try { status = Integer.parseInt(parts[1]); } catch (NumberFormatException ignored) {}
+        }
+
+        // Читаем остальные заголовки до пустой строки
+        while (true) {
+            String line = readLine(in);
+            if (line == null || line.isEmpty()) break;
+        }
+
+        if (status != 200) {
+            throw new IOException("HTTP proxy CONNECT failed: " + status);
+        }
+        AppLog.d(TAG, "HTTP CONNECT tunnel established");
+    }
+
+    /** SOCKS5 tunnel через SOCKS5-прокси */
+    private static void tunnelSocks5(Socket sock, String host, int port) throws IOException {
+        OutputStream out = sock.getOutputStream();
+        InputStream in = sock.getInputStream();
+
+        // 1. Greeting: VER=5, NMETHODS=1, METHOD=0 (no auth)
+        out.write(new byte[]{0x05, 0x01, 0x00});
+        out.flush();
+
+        // 2. Server response
+        byte[] authResp = new byte[2];
+        readFully(in, authResp);
+        if (authResp[0] != 0x05 || authResp[1] != 0x00) {
+            throw new IOException("SOCKS5: auth not supported (method=" + (authResp[1] & 0xFF) + ")");
+        }
+
+        // 3. CONNECT request: VER=5, CMD=1(CONNECT), RSV=0, ATYP=3(DOMAIN)
+        byte[] hostBytes = host.getBytes("UTF-8");
+        byte[] connectReq = new byte[4 + 1 + hostBytes.length + 2];
+        connectReq[0] = 0x05; // VER
+        connectReq[1] = 0x01; // CMD: CONNECT
+        connectReq[2] = 0x00; // RSV
+        connectReq[3] = 0x03; // ATYP: DOMAIN
+        connectReq[4] = (byte) hostBytes.length;
+        System.arraycopy(hostBytes, 0, connectReq, 5, hostBytes.length);
+        connectReq[5 + hostBytes.length] = (byte) ((port >> 8) & 0xFF);
+        connectReq[6 + hostBytes.length] = (byte) (port & 0xFF);
+        out.write(connectReq);
+        out.flush();
+
+        // 4. Server response (min 10 bytes for IPv4)
+        byte[] resp = new byte[4];
+        readFully(in, resp);
+        if (resp[0] != 0x05) {
+            throw new IOException("SOCKS5: bad version in response");
+        }
+        if (resp[1] != 0x00) {
+            throw new IOException("SOCKS5: CONNECT failed, reply=" + (resp[1] & 0xFF));
+        }
+        // Пропускаем BIND.ADDR в зависимости от ATYP
+        int atyp = resp[3] & 0xFF;
+        if (atyp == 1) {
+            readFully(in, new byte[4 + 2]); // IPv4 + port
+        } else if (atyp == 3) {
+            int dlen = in.read();
+            readFully(in, new byte[dlen + 2]); // domain + port
+        } else if (atyp == 4) {
+            readFully(in, new byte[16 + 2]); // IPv6 + port
+        }
+
+        AppLog.d(TAG, "SOCKS5 tunnel established to " + host + ":" + port);
+    }
+
+    private static void readFully(InputStream in, byte[] buf) throws IOException {
+        int off = 0;
+        while (off < buf.length) {
+            int r = in.read(buf, off, buf.length - off);
+            if (r == -1) throw new IOException("EOF during proxy handshake");
+            off += r;
+        }
     }
 
     private static String readLine(InputStream in) throws IOException {
