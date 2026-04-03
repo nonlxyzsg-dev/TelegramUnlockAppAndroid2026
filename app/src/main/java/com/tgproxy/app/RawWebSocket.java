@@ -29,10 +29,14 @@ public class RawWebSocket {
     private static final int OP_PING = 0x9;
     private static final int OP_PONG = 0xA;
 
+    private static final int KEEPALIVE_INTERVAL = 20_000;
+
     private final InputStream in;
     private final OutputStream out;
     private final Socket socket;
     private volatile boolean closed = false;
+    private volatile long lastActivity = System.currentTimeMillis();
+    private Thread keepaliveThread;
     private static final SecureRandom rng = new SecureRandom();
 
     private static SSLSocketFactory sslFactory;
@@ -448,6 +452,7 @@ public class RawWebSocket {
 
         if (statusCode == 101) {
             ssl.setSoTimeout(0);
+            ws.startKeepalive();
             return ws;
         }
 
@@ -538,6 +543,7 @@ public class RawWebSocket {
 
         if (statusCode == 101) {
             ssl.setSoTimeout(0);
+            ws.startKeepalive();
             return ws;
         }
 
@@ -694,6 +700,7 @@ public class RawWebSocket {
 
         if (statusCode == 101) {
             raw.setSoTimeout(0);
+            ws.startKeepalive();
             return ws;
         }
 
@@ -748,8 +755,36 @@ public class RawWebSocket {
         return sb.length() > 0 ? sb.toString() : null;
     }
 
+    private void startKeepalive() {
+        keepaliveThread = new Thread(() -> {
+            while (!closed) {
+                try {
+                    Thread.sleep(KEEPALIVE_INTERVAL);
+                    if (closed) break;
+                    long idle = System.currentTimeMillis() - lastActivity;
+                    if (idle >= KEEPALIVE_INTERVAL) {
+                        synchronized (out) {
+                            out.write(buildFrame(OP_PING, new byte[0], true));
+                            out.flush();
+                        }
+                        lastActivity = System.currentTimeMillis();
+                    }
+                } catch (Exception e) {
+                    if (!closed) {
+                        closed = true;
+                        closeQuiet();
+                    }
+                    break;
+                }
+            }
+        }, "ws-keepalive");
+        keepaliveThread.setDaemon(true);
+        keepaliveThread.start();
+    }
+
     public void send(byte[] data) throws IOException {
         if (closed) throw new IOException("closed");
+        lastActivity = System.currentTimeMillis();
         byte[] frame = buildFrame(OP_BINARY, data, true);
         synchronized (out) {
             out.write(frame);
@@ -811,6 +846,7 @@ public class RawWebSocket {
             if (opcode == OP_PONG) continue;
 
             if (opcode == 0x1 || opcode == 0x2) {
+                lastActivity = System.currentTimeMillis();
                 return payload;
             }
         }
@@ -820,6 +856,7 @@ public class RawWebSocket {
     public void close() {
         if (closed) return;
         closed = true;
+        if (keepaliveThread != null) keepaliveThread.interrupt();
         try {
             synchronized (out) {
                 out.write(buildFrame(OP_CLOSE, new byte[0], true));
