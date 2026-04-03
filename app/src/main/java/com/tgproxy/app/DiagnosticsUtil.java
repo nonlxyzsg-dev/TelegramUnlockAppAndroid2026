@@ -742,6 +742,7 @@ public class DiagnosticsUtil {
             // === Тест relay (если настроен) ===
             String currentRelay = RawWebSocket.getRelayUrl();
             boolean relayOk = false;
+            boolean relayWsOk = false;
             if (currentRelay != null) {
                 sb.append("\n── Тест Cloudflare Relay ──\n");
                 sb.append("  URL: ").append(currentRelay).append("\n");
@@ -762,7 +763,95 @@ public class DiagnosticsUtil {
                         sb.append("  ⚠️ HTTP ").append(code).append(" (").append(relayTime).append(" ms)\n");
                     }
                 } catch (Exception e) {
-                    sb.append("  ❌ ").append(e.getMessage()).append("\n");
+                    sb.append("  ❌ Relay недоступен: ").append(e.getMessage()).append("\n");
+                }
+
+                // Полноценный WS тест через relay к DC2
+                if (relayOk) {
+                    sb.append("  WS через relay: ");
+                    try {
+                        long wsStart = System.currentTimeMillis();
+                        String wsUrl = currentRelay + "/dc2/apiws";
+                        java.net.URL url = new java.net.URL(wsUrl);
+                        String relayHost = url.getHost();
+                        int relayPort = url.getPort() > 0 ? url.getPort() : 443;
+
+                        java.net.Socket raw = new java.net.Socket();
+                        raw.connect(new java.net.InetSocketAddress(relayHost, relayPort), 8000);
+                        raw.setSoTimeout(8000);
+                        raw.setTcpNoDelay(true);
+
+                        javax.net.ssl.SSLSocketFactory sf = (javax.net.ssl.SSLSocketFactory)
+                                javax.net.ssl.SSLSocketFactory.getDefault();
+                        javax.net.ssl.SSLSocket ssl = (javax.net.ssl.SSLSocket)
+                                sf.createSocket(raw, relayHost, relayPort, true);
+                        ssl.setUseClientMode(true);
+                        if (android.os.Build.VERSION.SDK_INT >= 29) {
+                            javax.net.ssl.SSLParameters params = ssl.getSSLParameters();
+                            params.setApplicationProtocols(new String[]{"http/1.1"});
+                            ssl.setSSLParameters(params);
+                        }
+                        ssl.startHandshake();
+
+                        java.io.OutputStream out = ssl.getOutputStream();
+                        java.io.InputStream in = ssl.getInputStream();
+
+                        byte[] keyBytes = new byte[16];
+                        new java.security.SecureRandom().nextBytes(keyBytes);
+                        String wsKey = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP);
+
+                        String req = "GET " + url.getPath() + " HTTP/1.1\r\n" +
+                                "Host: " + relayHost + "\r\n" +
+                                "Upgrade: websocket\r\n" +
+                                "Connection: Upgrade\r\n" +
+                                "Sec-WebSocket-Key: " + wsKey + "\r\n" +
+                                "Sec-WebSocket-Version: 13\r\n" +
+                                "Sec-WebSocket-Protocol: binary\r\n" +
+                                "Origin: https://web.telegram.org\r\n" +
+                                "User-Agent: Mozilla/5.0\r\n" +
+                                "\r\n";
+                        out.write(req.getBytes("UTF-8"));
+                        out.flush();
+
+                        // Читаем ответ
+                        int wsStatus = 0;
+                        StringBuilder respLine = new StringBuilder();
+                        boolean firstLine = true;
+                        while (true) {
+                            int b = in.read();
+                            if (b < 0) break;
+                            if (b == '\n') {
+                                String line = respLine.toString().trim();
+                                if (line.isEmpty()) break;
+                                if (firstLine) {
+                                    String[] parts = line.split(" ", 3);
+                                    if (parts.length >= 2) {
+                                        try { wsStatus = Integer.parseInt(parts[1]); } catch (NumberFormatException ignored) {}
+                                    }
+                                    firstLine = false;
+                                }
+                                respLine.setLength(0);
+                            } else {
+                                respLine.append((char) b);
+                            }
+                        }
+
+                        long wsTime = System.currentTimeMillis() - wsStart;
+                        ssl.close();
+                        raw.close();
+
+                        if (wsStatus == 101) {
+                            sb.append("✅ WS 101 — ").append(wsTime).append(" ms\n");
+                            relayWsOk = true;
+                            AppLog.i("TGProxy", "Relay WS test: 101 OK in " + wsTime + "ms");
+                        } else {
+                            sb.append("❌ HTTP ").append(wsStatus).append(" — ").append(wsTime).append(" ms\n");
+                            AppLog.w("TGProxy", "Relay WS test: HTTP " + wsStatus);
+                        }
+                    } catch (Exception e) {
+                        sb.append("❌ ").append(e.getMessage()).append("\n");
+                        AppLog.w("TGProxy", "Relay WS test failed: " + e.getMessage());
+                    }
                 }
             }
 
@@ -780,13 +869,18 @@ public class DiagnosticsUtil {
                 sb.append("✅ WS (plain:80) работает на ").append(dcPlainWsOk).append("/5 DC\n");
                 sb.append("   → Обход TLS-блокировки через порт 80\n");
             }
-            if (relayOk) {
-                sb.append("✅ Cloudflare Relay работает\n");
+            if (relayWsOk) {
+                sb.append("✅ Cloudflare Relay: WS к Telegram работает!\n");
                 sb.append("   → Трафик пойдёт через Cloudflare\n");
+            } else if (relayOk) {
+                sb.append("⚠️ Relay доступен, но WS к Telegram не прошёл\n");
+                sb.append("   → Проверьте worker (cf-worker/worker.js)\n");
             }
             if (dcWsOk == 0 && dcPlainWsOk == 0) {
-                if (relayOk) {
-                    sb.append("   → Прямое подключение заблокировано, relay спасёт\n");
+                if (relayWsOk) {
+                    sb.append("   → Прямое подключение заблокировано, relay спасёт!\n");
+                } else if (relayOk) {
+                    sb.append("   → Прямое подключение заблокировано, relay доступен но WS не прошёл\n");
                 } else if (dcTlsOk > 0) {
                     sb.append("⚠️ TLS проходит, но WS блокируется\n");
                     sb.append("   → DPI фильтрует WebSocket upgrade\n");
