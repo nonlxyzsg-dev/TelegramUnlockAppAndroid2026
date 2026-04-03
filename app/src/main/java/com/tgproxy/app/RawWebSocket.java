@@ -114,9 +114,31 @@ public class RawWebSocket {
         }
     }
 
+    // === Cloudflare Worker relay (обход блокировки через Cloudflare) ===
+    private static volatile String relayUrl = null;  // https://your-worker.workers.dev
+
+    /** Настроить relay URL. Вызывается из MainActivity. */
+    public static void setRelayUrl(String url) {
+        if (url != null && !url.isEmpty()) {
+            // Убираем trailing slash
+            relayUrl = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+            workingStrategy = -1;
+            blockedIps.clear();
+            AppLog.i(TAG, "Relay URL: " + relayUrl);
+        } else {
+            relayUrl = null;
+            AppLog.i(TAG, "Relay URL: disabled");
+        }
+    }
+
+    public static String getRelayUrl() {
+        return relayUrl;
+    }
+
     // Специальные стратегии (не кодируются как sniMode*100+frag)
     private static final int STRATEGY_PLAIN_WS = 9999;    // Plain WS на порт 80 (без TLS)
     private static final int STRATEGY_DNS_RESOLVE = 9998;  // DNS-резолв свежего IP
+    private static final int STRATEGY_RELAY = 9997;        // Cloudflare Worker relay
 
     // Таймаут при переборе стратегий (мс)
     private static final int PROBE_TIMEOUT = 10000;
@@ -138,9 +160,17 @@ public class RawWebSocket {
         // Ключ кэша: IP+домен (разные DC на одном IP могут вести себя по-разному)
         String cacheKey = ip + "/" + domain;
 
-        // Если этот IP+домен заблокирован по TLS — пробуем plain WS и DNS
+        // Если этот IP+домен заблокирован по TLS — пробуем relay, plain WS и DNS
         if (blockedIps.contains(cacheKey)) {
-            // Plain WS на порт 80 (без TLS — ТСПУ не заблокирует)
+            // Relay через Cloudflare (самый надёжный обход)
+            if (relayUrl != null) {
+                try {
+                    return connectViaRelay(domain, timeout);
+                } catch (Exception e) {
+                    AppLog.w(TAG, "Relay failed: " + e.getMessage());
+                }
+            }
+            // Plain WS на порт 80 с фейковым Host
             try {
                 return connectPlainWs(ip, domain, timeout);
             } catch (Exception e1) {
@@ -161,7 +191,14 @@ public class RawWebSocket {
 
         // Если уже нашли рабочую стратегию — используем с полным таймаутом
         if (workingStrategy >= 0) {
-            if (workingStrategy == STRATEGY_PLAIN_WS) {
+            if (workingStrategy == STRATEGY_RELAY && relayUrl != null) {
+                try {
+                    return connectViaRelay(domain, timeout);
+                } catch (Exception e) {
+                    AppLog.w(TAG, "Cached RELAY failed, probing...");
+                    workingStrategy = -1;
+                }
+            } else if (workingStrategy == STRATEGY_PLAIN_WS) {
                 try {
                     return connectPlainWs(ip, domain, timeout);
                 } catch (Exception e) {
@@ -256,6 +293,22 @@ public class RawWebSocket {
         } catch (Exception e) {
             AppLog.w(TAG, "DNS_RESOLVE failed: " + e.getMessage());
             lastError = e;
+        }
+
+        // Relay через Cloudflare Worker — последний шанс перед отказом
+        if (relayUrl != null) {
+            try {
+                AppLog.i(TAG, "Trying Cloudflare relay: " + relayUrl);
+                RawWebSocket ws = connectViaRelay(domain, PROBE_TIMEOUT);
+                workingStrategy = STRATEGY_RELAY;
+                AppLog.i(TAG, "Strategy 'RELAY' WORKS via " + relayUrl + "!");
+                return ws;
+            } catch (WsRedirectException e) {
+                throw e;
+            } catch (Exception e) {
+                AppLog.w(TAG, "RELAY failed: " + e.getMessage());
+                lastError = e;
+            }
         }
 
         // Всё провалилось — запомнить IP+домен как заблокированный
@@ -554,6 +607,99 @@ public class RawWebSocket {
         throw new IOException("WS via proxy failed: " + statusCode);
     }
 
+    /**
+     * Подключение через Cloudflare Worker relay.
+     * Трафик: App → TLS к Cloudflare → Worker → Telegram
+     * ТСПУ видит TLS к Cloudflare, не к Telegram.
+     */
+    private static RawWebSocket connectViaRelay(String domain, int timeout) throws Exception {
+        // Извлекаем номер DC из домена: kws2.web.telegram.org → 2
+        int dc = 2;
+        if (domain.startsWith("kws") && domain.length() > 3) {
+            try { dc = Integer.parseInt(domain.substring(3, 4)); } catch (NumberFormatException ignored) {}
+        }
+
+        String fullUrl = relayUrl + "/dc" + dc + "/apiws";
+        AppLog.d(TAG, "WS: connecting via relay " + fullUrl);
+
+        // Парсим URL relay
+        java.net.URL url = new java.net.URL(fullUrl);
+        String relayHost = url.getHost();
+        int relayPort = url.getPort() > 0 ? url.getPort() : (url.getProtocol().equals("https") ? 443 : 80);
+        boolean useTls = url.getProtocol().equals("https");
+
+        Socket raw = new Socket();
+        raw.connect(new java.net.InetSocketAddress(relayHost, relayPort), timeout);
+        raw.setSoTimeout(timeout);
+        raw.setTcpNoDelay(true);
+
+        Socket finalSocket = raw;
+        if (useTls) {
+            SSLSocket ssl = (SSLSocket) sslFactory.createSocket(raw, relayHost, relayPort, true);
+            ssl.setUseClientMode(true);
+
+            // ALPN только http/1.1
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                javax.net.ssl.SSLParameters params = ssl.getSSLParameters();
+                params.setApplicationProtocols(new String[]{"http/1.1"});
+                ssl.setSSLParameters(params);
+            }
+
+            ssl.startHandshake();
+            AppLog.d(TAG, "WS: relay TLS OK, proto=" + ssl.getSession().getProtocol());
+            finalSocket = ssl;
+        }
+
+        RawWebSocket ws = new RawWebSocket(finalSocket);
+
+        byte[] keyBytes = new byte[16];
+        rng.nextBytes(keyBytes);
+        String wsKey = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP);
+
+        String path = url.getPath();
+        String req = "GET " + path + " HTTP/1.1\r\n" +
+                "Host: " + relayHost + "\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Key: " + wsKey + "\r\n" +
+                "Sec-WebSocket-Version: 13\r\n" +
+                "Sec-WebSocket-Protocol: binary\r\n" +
+                "Origin: https://web.telegram.org\r\n" +
+                "User-Agent: " + USER_AGENTS[rng.nextInt(USER_AGENTS.length)] + "\r\n" +
+                "\r\n";
+
+        ws.out.write(req.getBytes("UTF-8"));
+        ws.out.flush();
+
+        int statusCode = 0;
+        boolean firstLine = true;
+        while (true) {
+            String line = readLine(ws.in);
+            if (line == null || line.isEmpty()) break;
+            if (firstLine) {
+                String[] parts = line.split(" ", 3);
+                if (parts.length >= 2) {
+                    try { statusCode = Integer.parseInt(parts[1]); } catch (NumberFormatException ignored) {}
+                }
+                firstLine = false;
+            }
+        }
+
+        AppLog.d(TAG, "WS: relay handshake status=" + statusCode);
+
+        if (statusCode == 101) {
+            finalSocket.setSoTimeout(0);
+            ws.startKeepalive();
+            return ws;
+        }
+
+        ws.closeQuiet();
+        if (statusCode >= 301 && statusCode <= 308) {
+            throw new WsRedirectException(statusCode);
+        }
+        throw new IOException("WS relay failed: " + statusCode);
+    }
+
     /** HTTP CONNECT tunnel через HTTP-прокси */
     private static void tunnelHttpConnect(Socket sock, String host, int port) throws IOException {
         OutputStream out = sock.getOutputStream();
@@ -648,11 +794,22 @@ public class RawWebSocket {
 
     /**
      * Plain WebSocket на порт 80 (без TLS).
-     * ТСПУ блокирует TLS к IP Telegram, но TCP:80 открыт.
-     * MTProto имеет собственное шифрование, TLS не обязателен.
+     * Пробуем 2 варианта: настоящий Host и фейковый Host (обход DPI).
      */
     private static RawWebSocket connectPlainWs(String ip, String domain, int timeout) throws Exception {
-        AppLog.d(TAG, "WS: trying PLAIN (no TLS) " + ip + ":80 domain=" + domain);
+        // Вариант 1: фейковый Host (DPI не увидит telegram в HTTP)
+        try {
+            return connectPlainWsWithHost(ip, domain, "www.google.com", timeout);
+        } catch (Exception e) {
+            AppLog.w(TAG, "Plain WS fake Host failed: " + e.getMessage());
+        }
+        // Вариант 2: настоящий Host (если DPI не смотрит HTTP)
+        return connectPlainWsWithHost(ip, domain, domain, timeout);
+    }
+
+    private static RawWebSocket connectPlainWsWithHost(String ip, String domain, String hostHeader, int timeout) throws Exception {
+        boolean fakeHost = !hostHeader.equals(domain);
+        AppLog.d(TAG, "WS: trying PLAIN " + ip + ":80 Host=" + hostHeader + (fakeHost ? " (fake)" : ""));
 
         Socket raw = new Socket();
         raw.connect(new java.net.InetSocketAddress(ip, 80), timeout);
@@ -667,9 +824,9 @@ public class RawWebSocket {
         rng.nextBytes(keyBytes);
         String wsKey = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP);
 
-        // HTTP (не HTTPS) WebSocket upgrade на порт 80
+        // HTTP WebSocket upgrade — Host может быть фейковым для обхода DPI
         String req = "GET /apiws HTTP/1.1\r\n" +
-                "Host: " + domain + "\r\n" +
+                "Host: " + hostHeader + "\r\n" +
                 "Upgrade: websocket\r\n" +
                 "Connection: Upgrade\r\n" +
                 "Sec-WebSocket-Key: " + wsKey + "\r\n" +
@@ -696,7 +853,7 @@ public class RawWebSocket {
             }
         }
 
-        AppLog.d(TAG, "WS: plain handshake status=" + statusCode + " domain=" + domain);
+        AppLog.d(TAG, "WS: plain handshake status=" + statusCode + " Host=" + hostHeader);
 
         if (statusCode == 101) {
             raw.setSoTimeout(0);
@@ -709,7 +866,7 @@ public class RawWebSocket {
                 || statusCode == 307 || statusCode == 308) {
             throw new WsRedirectException(statusCode);
         }
-        throw new IOException("Plain WS:80 handshake failed: " + statusCode);
+        throw new IOException("Plain WS:80 failed (Host=" + hostHeader + "): " + statusCode);
     }
 
     /**

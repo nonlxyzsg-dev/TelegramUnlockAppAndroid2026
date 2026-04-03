@@ -280,6 +280,66 @@
 
         </LinearLayout>
 
+        <!-- Cloudflare Relay (обход блокировки через Cloudflare) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_bg"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Cloudflare Relay"
+                android:textColor="#4CAF50"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="&#x0421;&#x0430;&#x043C;&#x044B;&#x0439; &#x043D;&#x0430;&#x0434;&#x0451;&#x0436;&#x043D;&#x044B;&#x0439; &#x043E;&#x0431;&#x0445;&#x043E;&#x0434;. &#x0422;&#x0440;&#x0430;&#x0444;&#x0438;&#x043A; &#x0438;&#x0434;&#x0451;&#x0442; &#x0447;&#x0435;&#x0440;&#x0435;&#x0437; Cloudflare &#x2014; &#x0422;&#x0421;&#x041F;&#x0423; &#x0432;&#x0438;&#x0434;&#x0438;&#x0442; &#x043F;&#x043E;&#x0434;&#x043A;&#x043B;&#x044E;&#x0447;&#x0435;&#x043D;&#x0438;&#x0435; &#x043A; Cloudflare, &#x043D;&#x0435; &#x043A; Telegram. &#x0418;&#x043D;&#x0441;&#x0442;&#x0440;&#x0443;&#x043A;&#x0446;&#x0438;&#x044F; &#x043D;&#x0430; GitHub &#x0432; &#x043F;&#x0430;&#x043F;&#x043A;&#x0435; cf-worker."
+                android:textColor="#888888"
+                android:textSize="12sp" />
+
+            <CheckBox
+                android:id="@+id/cb_relay"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_marginTop="4dp"
+                android:buttonTint="#4CAF50"
+                android:text="&#x0418;&#x0441;&#x043F;&#x043E;&#x043B;&#x044C;&#x0437;&#x043E;&#x0432;&#x0430;&#x0442;&#x044C; Cloudflare Relay"
+                android:textColor="#E0E0E0"
+                android:textSize="15sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Relay URL"
+                android:textColor="#888888"
+                android:textSize="12sp" />
+
+            <EditText
+                android:id="@+id/et_relay_url"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/edit_bg"
+                android:hint="https://your-worker.workers.dev"
+                android:inputType="textUri"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:singleLine="true"
+                android:textColor="#E0E0E0"
+                android:textColorHint="#555555"
+                android:textSize="14sp" />
+
+        </LinearLayout>
+
         <!-- Внешний прокси (для обхода IP-блокировки ТСПУ) -->
         <LinearLayout
             android:layout_width="match_parent"

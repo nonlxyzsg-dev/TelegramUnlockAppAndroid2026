@@ -32,8 +32,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvStatus, tvAddress, tvPort, tvTgLink, tvPing, tvTraffic, tvUptime;
     private RadioGroup rgMode;
     private RadioButton rbOriginal, rbPython;
-    private EditText etCustomPort, etCustomIp, etTgIp, etUpstreamAddr;
-    private CheckBox cbDynamicPort, cbAutostart, cbUpstreamProxy;
+    private EditText etCustomPort, etCustomIp, etTgIp, etUpstreamAddr, etRelayUrl;
+    private CheckBox cbDynamicPort, cbAutostart, cbUpstreamProxy, cbRelay;
     private RadioGroup rgUpstreamType;
     private RadioButton rbUpstreamSocks5, rbUpstreamHttp;
     private Handler handler;
@@ -78,6 +78,8 @@ public class MainActivity extends AppCompatActivity {
         rbUpstreamSocks5 = findViewById(R.id.rb_upstream_socks5);
         rbUpstreamHttp = findViewById(R.id.rb_upstream_http);
         etUpstreamAddr = findViewById(R.id.et_upstream_addr);
+        cbRelay = findViewById(R.id.cb_relay);
+        etRelayUrl = findViewById(R.id.et_relay_url);
 
         int savedMode = prefs.getInt("proxy_mode", ProxyEngine.MODE_ORIGINAL);
         if (savedMode == ProxyEngine.MODE_PYTHON) {
@@ -98,6 +100,10 @@ public class MainActivity extends AppCompatActivity {
             rbUpstreamSocks5.setChecked(true);
         }
         etUpstreamAddr.setText(prefs.getString("upstream_addr", ""));
+
+        // Relay settings
+        cbRelay.setChecked(prefs.getBoolean("relay_enabled", false));
+        etRelayUrl.setText(prefs.getString("relay_url", ""));
 
         int savedPort = prefs.getInt("custom_port", 1080);
         etCustomPort.setText(String.valueOf(savedPort));
@@ -121,7 +127,8 @@ public class MainActivity extends AppCompatActivity {
         cbAutostart.setOnCheckedChangeListener((v, c) ->
                 prefs.edit().putBoolean("autostart_open", c).apply());
 
-        // Применяем upstream proxy при запуске приложения
+        // Применяем relay и upstream proxy при запуске приложения
+        applyRelay();
         applyUpstreamProxy();
 
         btnStart.setOnClickListener(v -> startProxy());
@@ -263,10 +270,15 @@ public class MainActivity extends AppCompatActivity {
         String upstreamAddr = etUpstreamAddr.getText().toString().trim();
         e.putString("upstream_addr", upstreamAddr);
 
+        // Relay
+        e.putBoolean("relay_enabled", cbRelay.isChecked());
+        e.putString("relay_url", etRelayUrl.getText().toString().trim());
+
         e.apply();
 
-        // Применяем настройки upstream proxy
+        // Применяем настройки
         applyUpstreamProxy();
+        applyRelay();
     }
 
     private void applyUpstreamProxy() {
@@ -281,6 +293,16 @@ public class MainActivity extends AppCompatActivity {
             RawWebSocket.setUpstreamProxy(type, host, port);
         } else {
             RawWebSocket.setUpstreamProxy(RawWebSocket.PROXY_NONE, null, 0);
+        }
+    }
+
+    private void applyRelay() {
+        boolean enabled = cbRelay.isChecked();
+        String url = etRelayUrl.getText().toString().trim();
+        if (enabled && !url.isEmpty()) {
+            RawWebSocket.setRelayUrl(url);
+        } else {
+            RawWebSocket.setRelayUrl(null);
         }
     }
 

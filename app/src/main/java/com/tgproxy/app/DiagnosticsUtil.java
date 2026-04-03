@@ -739,6 +739,33 @@ public class DiagnosticsUtil {
                 sb.append("\n⚠️ Запустите прокси для полной проверки\n");
             }
 
+            // === Тест relay (если настроен) ===
+            String currentRelay = RawWebSocket.getRelayUrl();
+            boolean relayOk = false;
+            if (currentRelay != null) {
+                sb.append("\n── Тест Cloudflare Relay ──\n");
+                sb.append("  URL: ").append(currentRelay).append("\n");
+                try {
+                    long relayStart = System.currentTimeMillis();
+                    // HTTP GET к relay root — должен ответить 200
+                    java.net.URL relayCheck = new java.net.URL(currentRelay + "/");
+                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) relayCheck.openConnection();
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+                    int code = conn.getResponseCode();
+                    long relayTime = System.currentTimeMillis() - relayStart;
+                    conn.disconnect();
+                    if (code == 200) {
+                        sb.append("  ✅ Relay доступен — ").append(relayTime).append(" ms\n");
+                        relayOk = true;
+                    } else {
+                        sb.append("  ⚠️ HTTP ").append(code).append(" (").append(relayTime).append(" ms)\n");
+                    }
+                } catch (Exception e) {
+                    sb.append("  ❌ ").append(e.getMessage()).append("\n");
+                }
+            }
+
             // === Вывод ===
             long elapsed = (System.currentTimeMillis() - diagStart) / 1000;
             sb.append("\n═══════════════════════════════\n");
@@ -753,15 +780,21 @@ public class DiagnosticsUtil {
                 sb.append("✅ WS (plain:80) работает на ").append(dcPlainWsOk).append("/5 DC\n");
                 sb.append("   → Обход TLS-блокировки через порт 80\n");
             }
+            if (relayOk) {
+                sb.append("✅ Cloudflare Relay работает\n");
+                sb.append("   → Трафик пойдёт через Cloudflare\n");
+            }
             if (dcWsOk == 0 && dcPlainWsOk == 0) {
-                if (dcTlsOk > 0) {
+                if (relayOk) {
+                    sb.append("   → Прямое подключение заблокировано, relay спасёт\n");
+                } else if (dcTlsOk > 0) {
                     sb.append("⚠️ TLS проходит, но WS блокируется\n");
                     sb.append("   → DPI фильтрует WebSocket upgrade\n");
-                    sb.append("   → Попробуйте внешний прокси\n");
+                    sb.append("   → Настройте Cloudflare Relay\n");
                 } else if (dcTcpOk > 0) {
                     sb.append("⚠️ TCP проходит, TLS блокируется\n");
                     sb.append("   → DPI блокирует TLS к Telegram IP\n");
-                    sb.append("   → Приложение попробует plain WS:80 и DNS-резолв\n");
+                    sb.append("   → Настройте Cloudflare Relay (инструкция в cf-worker/)\n");
                 } else {
                     sb.append("❌ Telegram IP полностью недоступны\n");
                     sb.append("   → Нужен VPN или внешний прокси\n");
