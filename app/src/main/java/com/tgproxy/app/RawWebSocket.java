@@ -127,9 +127,12 @@ public class RawWebSocket {
             return connectViaUpstreamProxy(ip, domain, timeout);
         }
 
-        // Если этот IP заблокирован по TLS — сразу exception, пусть идёт tcpFallback
-        if (blockedIps.contains(ip)) {
-            throw new IOException("IP " + ip + " blocked (TLS), using TCP fallback");
+        // Ключ кэша: IP+домен (разные DC на одном IP могут вести себя по-разному)
+        String cacheKey = ip + "/" + domain;
+
+        // Если этот IP+домен заблокирован по TLS — сразу exception, пусть идёт tcpFallback
+        if (blockedIps.contains(cacheKey)) {
+            throw new IOException(cacheKey + " blocked (TLS), using TCP fallback");
         }
 
         // Если уже нашли рабочую стратегию — используем с полным таймаутом
@@ -145,20 +148,21 @@ public class RawWebSocket {
             }
         }
 
-        // Порядок перебора:
-        // 1. NO_SNI — убрать SNI из ClientHello (ТСПУ нечего искать)
-        // 2. FAKE_SNI + DELAY — подмена SNI на google.com + фрагментация
-        // 3. DELAY — только фрагментация с задержкой (работает на WiFi)
-        // 4. MOBILE — длинные паузы для медленного DPI
-        // 5. DIRECT — без обхода
+        // Порядок перебора (SNI+DELAY первым — проверенно работает на WiFi):
+        // 1. SNI+DELAY — фрагментация с задержкой (работает на WiFi)
+        // 2. SNI+DIRECT — без обхода (если DPI нет)
+        // 3. NO_SNI+DIRECT — для мобильной сети (ТСПУ нечего искать)
+        // 4. NO_SNI+DELAY — NO_SNI + фрагментация
+        // 5. FAKE_SNI+DIRECT — подмена SNI
+        // 6. SNI+MOBILE — длинные паузы для медленного DPI
 
         int[][] strategies = {
-            {SNI_NONE,   -2},                              // NO_SNI + без фрагментации
-            {SNI_FAKE,   FragmentSocket.STRATEGY_DELAY},   // FAKE_SNI + фрагментация
-            {SNI_FAKE,   -2},                              // FAKE_SNI + без фрагментации
-            {SNI_NORMAL, FragmentSocket.STRATEGY_DELAY},   // Обычный SNI + фрагментация
-            {SNI_NORMAL, FragmentSocket.STRATEGY_MOBILE},  // Обычный SNI + длинные паузы
-            {SNI_NORMAL, -2},                              // DIRECT
+            {SNI_NORMAL, FragmentSocket.STRATEGY_DELAY},   // SNI + фрагментация (WiFi)
+            {SNI_NORMAL, -2},                              // DIRECT (нет DPI)
+            {SNI_NONE,   -2},                              // NO_SNI (мобильная сеть)
+            {SNI_NONE,   FragmentSocket.STRATEGY_DELAY},   // NO_SNI + фрагментация
+            {SNI_FAKE,   -2},                              // FAKE_SNI
+            {SNI_NORMAL, FragmentSocket.STRATEGY_MOBILE},  // Длинные паузы
         };
 
         Exception lastError = null;
@@ -180,9 +184,9 @@ public class RawWebSocket {
             }
         }
 
-        // Все стратегии провалились — запомнить IP как заблокированный
-        blockedIps.add(ip);
-        AppLog.w(TAG, "IP " + ip + " marked as TLS-blocked, will use TCP fallback");
+        // Все стратегии провалились — запомнить IP+домен как заблокированный
+        blockedIps.add(cacheKey);
+        AppLog.w(TAG, cacheKey + " marked as TLS-blocked, will use TCP fallback");
         throw lastError != null ? lastError : new IOException("All strategies failed for " + ip);
     }
 
@@ -311,12 +315,12 @@ public class RawWebSocket {
                 ssl.setEnabledCipherSuites(chromeLike.toArray(new String[0]));
             }
 
-            // ALPN
+            // ALPN — только http/1.1 (h2 несовместим с WebSocket upgrade!)
             if (android.os.Build.VERSION.SDK_INT >= 29) {
                 SSLParameters params = ssl.getSSLParameters();
                 // Сохраняем уже установленный SNI
                 java.util.List<javax.net.ssl.SNIServerName> existingSni = params.getServerNames();
-                params.setApplicationProtocols(new String[]{"h2", "http/1.1"});
+                params.setApplicationProtocols(new String[]{"http/1.1"});
                 if (existingSni != null) {
                     params.setServerNames(existingSni);
                 }
