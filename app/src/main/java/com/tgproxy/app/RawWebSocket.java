@@ -1,5 +1,7 @@
 package com.tgproxy.app;
 
+// Logging via AppLog
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -17,19 +19,17 @@ import javax.net.ssl.X509TrustManager;
 
 public class RawWebSocket {
 
+    private static final String TAG = "TGProxy";
+
     private static final int OP_BINARY = 0x2;
     private static final int OP_CLOSE = 0x8;
     private static final int OP_PING = 0x9;
     private static final int OP_PONG = 0xA;
 
-    private static final int KEEPALIVE_INTERVAL = 20_000;
-
     private final InputStream in;
     private final OutputStream out;
     private final Socket socket;
     private volatile boolean closed = false;
-    private volatile long lastActivity = System.currentTimeMillis();
-    private Thread keepaliveThread;
     private static final SecureRandom rng = new SecureRandom();
 
     private static SSLSocketFactory sslFactory;
@@ -72,7 +72,82 @@ public class RawWebSocket {
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
     };
 
+    // Текущая рабочая стратегия (обновляется при успехе)
+    private static volatile int workingStrategy = -1;
+    // IP которые заблокированы по TLS — не тратим время на перебор
+    private static final java.util.Set<String> blockedIps = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    // Таймаут при переборе стратегий (мс). MOBILE стратегия ~3.5с + handshake
+    private static final int PROBE_TIMEOUT = 8000;
+
     public static RawWebSocket connect(String ip, String domain, int timeout) throws Exception {
+        // Если этот IP заблокирован по TLS — сразу exception, пусть идёт tcpFallback
+        if (blockedIps.contains(ip)) {
+            throw new IOException("IP " + ip + " blocked (TLS), using TCP fallback");
+        }
+
+        // Если уже нашли рабочую стратегию — используем с полным таймаутом
+        if (workingStrategy >= 0) {
+            try {
+                return connectWithStrategy(ip, domain, timeout, workingStrategy);
+            } catch (Exception e) {
+                AppLog.w(TAG, "Working strategy " + workingStrategy + " failed for " + ip + ", probing...");
+                // Не сбрасываем workingStrategy — может этот конкретный IP заблокирован
+            }
+        }
+
+        // Перебираем стратегии: DELAY (WiFi) → MOBILE (мобильная сеть) → DIRECT
+        int[] strategies = {
+            FragmentSocket.STRATEGY_DELAY,
+            FragmentSocket.STRATEGY_MOBILE,
+            -2,  // DIRECT (без фрагментации)
+        };
+
+        Exception lastError = null;
+        for (int strategy : strategies) {
+            try {
+                RawWebSocket ws = connectWithStrategy(ip, domain, PROBE_TIMEOUT, strategy);
+                workingStrategy = strategy;
+                String name = strategyName(strategy);
+                AppLog.i(TAG, "Strategy '" + name + "' WORKS for " + ip + "!");
+                return ws;
+            } catch (WsRedirectException e) {
+                throw e;
+            } catch (Exception e) {
+                String name = strategyName(strategy);
+                AppLog.w(TAG, "Strategy '" + name + "' failed for " + ip + ": " + e.getMessage());
+                lastError = e;
+            }
+        }
+
+        // Все стратегии провалились — запомнить IP как заблокированный
+        blockedIps.add(ip);
+        AppLog.w(TAG, "IP " + ip + " marked as TLS-blocked, will use TCP fallback");
+        throw lastError != null ? lastError : new IOException("All strategies failed for " + ip);
+    }
+
+    /** Сбросить кэш заблокированных IP (например при смене сети) */
+    public static void resetBlockedIps() {
+        blockedIps.clear();
+        workingStrategy = -1;
+        AppLog.i(TAG, "Blocked IPs cache cleared");
+    }
+
+    private static String strategyName(int s) {
+        switch (s) {
+            case FragmentSocket.STRATEGY_DELAY: return "DELAY";
+            case FragmentSocket.STRATEGY_AGGRESSIVE: return "AGGRESSIVE";
+            case FragmentSocket.STRATEGY_SIMPLE: return "SIMPLE";
+            case FragmentSocket.STRATEGY_MOBILE: return "MOBILE";
+            case -1: return "NO_SNI";
+            case -2: return "DIRECT";
+            default: return "UNKNOWN";
+        }
+    }
+
+    private static RawWebSocket connectWithStrategy(String ip, String domain, int timeout, int strategy) throws Exception {
+        String name = strategyName(strategy);
+        AppLog.d(TAG, "WS: trying " + ip + ":443 domain=" + domain + " strategy=" + name);
+
         Socket raw = new Socket();
         raw.connect(new java.net.InetSocketAddress(ip, 443), timeout);
         raw.setSoTimeout(timeout);
@@ -80,9 +155,75 @@ public class RawWebSocket {
         raw.setReceiveBufferSize(262144);
         raw.setSendBufferSize(262144);
 
-        SSLSocket ssl = (SSLSocket) sslFactory.createSocket(raw, domain, 443, true);
+        SSLSocket ssl;
+        if (strategy == -2) {
+            // Прямое подключение без фрагментации
+            ssl = (SSLSocket) sslFactory.createSocket(raw, domain, 443, true);
+        } else if (strategy == -1) {
+            // Без SNI — domain передаём как IP, а не как hostname
+            // DPI не увидит SNI в ClientHello
+            Socket fragmented = new FragmentSocket(raw, FragmentSocket.STRATEGY_DELAY);
+            ssl = (SSLSocket) sslFactory.createSocket(fragmented, ip, 443, true);
+        } else {
+            // Фрагментация с выбранной стратегией
+            Socket fragmented = new FragmentSocket(raw, strategy);
+            ssl = (SSLSocket) sslFactory.createSocket(fragmented, domain, 443, true);
+        }
+
         ssl.setUseClientMode(true);
+
+        // Маскировка TLS fingerprint под браузер Chrome
+        // DPI может блокировать не по SNI, а по JA3 fingerprint (набор cipher suites, extensions)
+        // Java SSLSocket имеет уникальный fingerprint, отличный от браузера
+        try {
+            // Предпочитаем TLS 1.3 (как Chrome) — другой формат ClientHello
+            String[] protocols = ssl.getSupportedProtocols();
+            java.util.List<String> preferred = new java.util.ArrayList<>();
+            for (String p : protocols) {
+                if (p.equals("TLSv1.3")) preferred.add(0, p);
+                else if (p.equals("TLSv1.2")) preferred.add(p);
+            }
+            if (!preferred.isEmpty()) {
+                ssl.setEnabledProtocols(preferred.toArray(new String[0]));
+            }
+
+            // Cipher suites как у Chrome (современные, AEAD)
+            String[] supportedCiphers = ssl.getSupportedCipherSuites();
+            java.util.List<String> chromeLike = new java.util.ArrayList<>();
+            // TLS 1.3 ciphers (Chrome порядок)
+            String[] chromeOrder = {
+                "TLS_AES_128_GCM_SHA256",
+                "TLS_AES_256_GCM_SHA384",
+                "TLS_CHACHA20_POLY1305_SHA256",
+                "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+                "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+                "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+            };
+            java.util.Set<String> supported = new java.util.HashSet<>(java.util.Arrays.asList(supportedCiphers));
+            for (String c : chromeOrder) {
+                if (supported.contains(c)) chromeLike.add(c);
+            }
+            if (chromeLike.size() >= 3) {
+                ssl.setEnabledCipherSuites(chromeLike.toArray(new String[0]));
+            }
+
+            // ALPN — как браузер (h2, http/1.1)
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                javax.net.ssl.SSLParameters params = ssl.getSSLParameters();
+                params.setApplicationProtocols(new String[]{"h2", "http/1.1"});
+                ssl.setSSLParameters(params);
+            }
+        } catch (Exception e) {
+            AppLog.w(TAG, "TLS fingerprint tuning failed: " + e.getMessage());
+        }
+
         ssl.startHandshake();
+        AppLog.d(TAG, "WS: TLS handshake OK via " + name
+                + " proto=" + ssl.getSession().getProtocol()
+                + " cipher=" + ssl.getSession().getCipherSuite());
 
         RawWebSocket ws = new RawWebSocket(ssl);
 
@@ -107,7 +248,6 @@ public class RawWebSocket {
         StringBuilder sb = new StringBuilder();
         int statusCode = 0;
         boolean firstLine = true;
-        boolean isRedirect = false;
 
         while (true) {
             String line = readLine(ws.in);
@@ -124,9 +264,10 @@ public class RawWebSocket {
             }
         }
 
+        AppLog.d(TAG, "WS: handshake response status=" + statusCode + " domain=" + domain);
+
         if (statusCode == 101) {
             ssl.setSoTimeout(0);
-            ws.startKeepalive();
             return ws;
         }
 
@@ -153,33 +294,6 @@ public class RawWebSocket {
         return sb.length() > 0 ? sb.toString() : null;
     }
 
-    private void startKeepalive() {
-        keepaliveThread = new Thread(() -> {
-            while (!closed) {
-                try {
-                    Thread.sleep(KEEPALIVE_INTERVAL);
-                    if (closed) break;
-                    long idle = System.currentTimeMillis() - lastActivity;
-                    if (idle >= KEEPALIVE_INTERVAL) {
-                        synchronized (out) {
-                            out.write(buildFrame(OP_PING, new byte[0], true));
-                            out.flush();
-                        }
-                        lastActivity = System.currentTimeMillis();
-                    }
-                } catch (Exception e) {
-                    if (!closed) {
-                        closed = true;
-                        closeQuiet();
-                    }
-                    break;
-                }
-            }
-        }, "ws-keepalive");
-        keepaliveThread.setDaemon(true);
-        keepaliveThread.start();
-    }
-
     public void send(byte[] data) throws IOException {
         if (closed) throw new IOException("closed");
         byte[] frame = buildFrame(OP_BINARY, data, true);
@@ -187,7 +301,6 @@ public class RawWebSocket {
             out.write(frame);
             out.flush();
         }
-        lastActivity = System.currentTimeMillis();
     }
 
     public void sendBatch(java.util.List<byte[]> parts) throws IOException {
@@ -217,6 +330,7 @@ public class RawWebSocket {
             }
 
             if (opcode == OP_CLOSE) {
+                AppLog.d(TAG, "WS recv: got CLOSE frame");
                 closed = true;
                 try {
                     byte[] closeData = payload.length >= 2 ? Arrays.copyOf(payload, 2) : new byte[0];
@@ -243,7 +357,6 @@ public class RawWebSocket {
             if (opcode == OP_PONG) continue;
 
             if (opcode == 0x1 || opcode == 0x2) {
-                lastActivity = System.currentTimeMillis();
                 return payload;
             }
         }
@@ -253,7 +366,6 @@ public class RawWebSocket {
     public void close() {
         if (closed) return;
         closed = true;
-        if (keepaliveThread != null) keepaliveThread.interrupt();
         try {
             synchronized (out) {
                 out.write(buildFrame(OP_CLOSE, new byte[0], true));

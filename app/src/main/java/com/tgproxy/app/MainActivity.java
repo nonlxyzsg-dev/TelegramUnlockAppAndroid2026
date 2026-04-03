@@ -24,8 +24,7 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.preference.PreferenceManager;
 
-import java.net.InetSocketAddress;
-import java.net.Socket;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -131,6 +130,11 @@ public class MainActivity extends AppCompatActivity {
         TextView tvGithub = findViewById(R.id.tv_github);
         tvTgChannel.setOnClickListener(v -> openLink("https://t.me/jar_with_neurons"));
         tvGithub.setOnClickListener(v -> openLink("https://github.com/nonlxyzsg-dev/TelegramUnlockAppAndroid2026"));
+
+        Button btnLogs = findViewById(R.id.btn_logs);
+        btnLogs.setOnClickListener(v -> {
+            startActivity(new Intent(this, LogActivity.class));
+        });
 
         TextView tvDiagResult = findViewById(R.id.tv_diag_result);
         Button btnDiagnose = findViewById(R.id.btn_diagnose);
@@ -294,64 +298,32 @@ public class MainActivity extends AppCompatActivity {
             pingRunning = true;
             new Thread(() -> {
                 try {
+                    // Тестируем WS handshake напрямую к Telegram DC — это реальный тест,
+                    // а не TCP-пинг который проходит через DPI
                     String tgIp = prefs.getString("tg_ping_ip", "149.154.167.220");
-                    int proxyPort = svc.getPort();
-                    String proxyIp = svc.getIp();
-                    long start = System.currentTimeMillis();
-                    Socket s = new Socket();
-                    s.connect(new InetSocketAddress(proxyIp, proxyPort), 3000);
-                    s.setSoTimeout(3000);
-                    s.setTcpNoDelay(true);
 
-                    java.io.OutputStream out = s.getOutputStream();
-                    java.io.InputStream in = s.getInputStream();
-
-                    byte[] tgIpBytes;
-                    try {
-                        tgIpBytes = java.net.InetAddress.getByName(tgIp).getAddress();
-                    } catch (Exception ex) {
-                        tgIpBytes = new byte[]{(byte)149, (byte)154, (byte)167, (byte)220};
+                    // Определяем DC по IP
+                    int dc = 2; // по умолчанию
+                    for (java.util.Map.Entry<Integer, String> entry : TgConstants.DC_IPS.entrySet()) {
+                        if (entry.getValue().equals(tgIp)) {
+                            dc = entry.getKey();
+                            break;
+                        }
                     }
+                    String domain = "kws" + dc + ".web.telegram.org";
 
-                    out.write(new byte[]{0x05, 0x01, 0x00});
-                    out.flush();
-                    byte[] authResp = new byte[2];
-                    int ar = 0;
-                    while (ar < 2) {
-                        int r = in.read(authResp, ar, 2 - ar);
-                        if (r == -1) throw new java.io.IOException("EOF");
-                        ar += r;
-                    }
+                    long[] result = DiagnosticsUtil.testWsHandshake(tgIp, domain, 8000);
+                    long wsPing = result[0];
+                    int wsStatus = (int) result[1];
 
-                    byte[] req = new byte[10];
-                    req[0] = 0x05;
-                    req[1] = 0x01;
-                    req[2] = 0x00;
-                    req[3] = 0x01;
-                    req[4] = tgIpBytes[0];
-                    req[5] = tgIpBytes[1];
-                    req[6] = tgIpBytes[2];
-                    req[7] = tgIpBytes[3];
-                    req[8] = (byte)(443 >> 8);
-                    req[9] = (byte)(443 & 0xFF);
-                    out.write(req);
-                    out.flush();
-
-                    byte[] resp = new byte[10];
-                    int rr = 0;
-                    while (rr < 10) {
-                        int r = in.read(resp, rr, 10 - rr);
-                        if (r == -1) throw new java.io.IOException("EOF");
-                        rr += r;
-                    }
-
-                    long elapsed = System.currentTimeMillis() - start;
-                    s.close();
-
-                    if (resp[1] == 0x00) {
-                        handler.post(() -> tvPing.setText(elapsed + " ms"));
+                    if (wsStatus == 101) {
+                        handler.post(() -> tvPing.setText(wsPing + " ms (WS)"));
+                    } else if (wsPing >= 0) {
+                        // TCP проходит но WS не работает — DPI
+                        long tcpPing = DiagnosticsUtil.testTcpConnect(tgIp, 443, 3000);
+                        handler.post(() -> tvPing.setText("DPI! TCP:" + tcpPing + "ms WS:❌"));
                     } else {
-                        handler.post(() -> tvPing.setText("err"));
+                        handler.post(() -> tvPing.setText("❌ недоступен"));
                     }
                 } catch (Exception e) {
                     handler.post(() -> tvPing.setText("err"));

@@ -211,16 +211,12 @@ public class ProxyService extends Service {
             networkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override
                 public void onAvailable(Network network) {
-                    if (engine != null) {
-                        engine.refreshPool();
-                    }
+                    AppLog.d("TGProxy", "Network onAvailable");
                 }
 
                 @Override
                 public void onLost(Network network) {
-                    if (engine != null) {
-                        engine.clearPool();
-                    }
+                    AppLog.d("TGProxy", "Network onLost");
                 }
             };
             cm.registerNetworkCallback(new NetworkRequest.Builder().build(), networkCallback);

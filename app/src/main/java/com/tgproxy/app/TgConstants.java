@@ -9,7 +9,7 @@ public final class TgConstants {
 
     public static final int BUF = 131072;
     public static final int POOL_SIZE = 8;
-    public static final double POOL_AGE = 45.0;
+    public static final double POOL_AGE = 120.0;
     public static final double COOLDOWN = 60.0;
 
     public static final long[][] TG_RANGES = {
