@@ -44,6 +44,13 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // Показываем версию в заголовке
+        try {
+            String ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            TextView tvTitle = findViewById(R.id.tv_title);
+            tvTitle.setText("TG Proxy v" + ver);
+        } catch (Exception ignored) {}
+
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         handler = new Handler(Looper.getMainLooper());
 
