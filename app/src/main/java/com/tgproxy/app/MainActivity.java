@@ -32,8 +32,10 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvStatus, tvAddress, tvPort, tvTgLink, tvPing, tvTraffic, tvUptime;
     private RadioGroup rgMode;
     private RadioButton rbOriginal, rbPython;
-    private EditText etCustomPort, etCustomIp, etTgIp;
-    private CheckBox cbDynamicPort, cbAutostart;
+    private EditText etCustomPort, etCustomIp, etTgIp, etUpstreamAddr;
+    private CheckBox cbDynamicPort, cbAutostart, cbUpstreamProxy;
+    private RadioGroup rgUpstreamType;
+    private RadioButton rbUpstreamSocks5, rbUpstreamHttp;
     private Handler handler;
     private Runnable statsUpdater;
     private SharedPreferences prefs;
@@ -43,6 +45,13 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Показываем версию в заголовке
+        try {
+            String ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            TextView tvTitle = findViewById(R.id.tv_title);
+            tvTitle.setText("TG Proxy v" + ver);
+        } catch (Exception ignored) {}
 
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         handler = new Handler(Looper.getMainLooper());
@@ -64,6 +73,11 @@ public class MainActivity extends AppCompatActivity {
         etCustomPort = findViewById(R.id.et_custom_port);
         etCustomIp = findViewById(R.id.et_custom_ip);
         etTgIp = findViewById(R.id.et_tg_ip);
+        cbUpstreamProxy = findViewById(R.id.cb_upstream_proxy);
+        rgUpstreamType = findViewById(R.id.rg_upstream_type);
+        rbUpstreamSocks5 = findViewById(R.id.rb_upstream_socks5);
+        rbUpstreamHttp = findViewById(R.id.rb_upstream_http);
+        etUpstreamAddr = findViewById(R.id.et_upstream_addr);
 
         int savedMode = prefs.getInt("proxy_mode", ProxyEngine.MODE_ORIGINAL);
         if (savedMode == ProxyEngine.MODE_PYTHON) {
@@ -74,6 +88,16 @@ public class MainActivity extends AppCompatActivity {
 
         cbDynamicPort.setChecked(prefs.getBoolean("dynamic_port", false));
         cbAutostart.setChecked(prefs.getBoolean("autostart_open", false));
+
+        // Upstream proxy settings
+        cbUpstreamProxy.setChecked(prefs.getBoolean("upstream_enabled", false));
+        String savedUpstreamType = prefs.getString("upstream_type", "socks5");
+        if ("http".equals(savedUpstreamType)) {
+            rbUpstreamHttp.setChecked(true);
+        } else {
+            rbUpstreamSocks5.setChecked(true);
+        }
+        etUpstreamAddr.setText(prefs.getString("upstream_addr", ""));
 
         int savedPort = prefs.getInt("custom_port", 1080);
         etCustomPort.setText(String.valueOf(savedPort));
@@ -96,6 +120,9 @@ public class MainActivity extends AppCompatActivity {
                 prefs.edit().putBoolean("dynamic_port", c).apply());
         cbAutostart.setOnCheckedChangeListener((v, c) ->
                 prefs.edit().putBoolean("autostart_open", c).apply());
+
+        // Применяем upstream proxy при запуске приложения
+        applyUpstreamProxy();
 
         btnStart.setOnClickListener(v -> startProxy());
         btnStop.setOnClickListener(v -> stopProxy());
@@ -216,7 +243,32 @@ public class MainActivity extends AppCompatActivity {
         if (tgIp.isEmpty()) tgIp = "149.154.167.220";
         e.putString("tg_ping_ip", tgIp);
 
+        // Upstream proxy
+        boolean upstreamEnabled = cbUpstreamProxy.isChecked();
+        e.putBoolean("upstream_enabled", upstreamEnabled);
+        e.putString("upstream_type", rbUpstreamHttp.isChecked() ? "http" : "socks5");
+        String upstreamAddr = etUpstreamAddr.getText().toString().trim();
+        e.putString("upstream_addr", upstreamAddr);
+
         e.apply();
+
+        // Применяем настройки upstream proxy
+        applyUpstreamProxy();
+    }
+
+    private void applyUpstreamProxy() {
+        boolean enabled = cbUpstreamProxy.isChecked();
+        String addr = etUpstreamAddr.getText().toString().trim();
+        if (enabled && !addr.isEmpty() && addr.contains(":")) {
+            String[] parts = addr.split(":", 2);
+            String host = parts[0].trim();
+            int port = 1080;
+            try { port = Integer.parseInt(parts[1].trim()); } catch (NumberFormatException ignored) {}
+            int type = rbUpstreamHttp.isChecked() ? RawWebSocket.PROXY_HTTP : RawWebSocket.PROXY_SOCKS5;
+            RawWebSocket.setUpstreamProxy(type, host, port);
+        } else {
+            RawWebSocket.setUpstreamProxy(RawWebSocket.PROXY_NONE, null, 0);
+        }
     }
 
     private void saveMode(int mode) {

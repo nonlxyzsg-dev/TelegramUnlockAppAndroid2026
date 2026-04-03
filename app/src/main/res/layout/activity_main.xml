@@ -12,6 +12,7 @@
         android:padding="20dp">
 
         <TextView
+            android:id="@+id/tv_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
@@ -276,6 +277,95 @@
                 android:text="\u0410\u0432\u0442\u043e\u0437\u0430\u043f\u0443\u0441\u043a \u043f\u0440\u0438 \u043e\u0442\u043a\u0440\u044b\u0442\u0438\u0438"
                 android:textColor="#E0E0E0"
                 android:textSize="15sp" />
+
+        </LinearLayout>
+
+        <!-- Внешний прокси (для обхода IP-блокировки ТСПУ) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_bg"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Внешний прокси (обход блокировки)"
+                android:textColor="#FF9800"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Если на мобильной сети Telegram не подключается — укажите внешний SOCKS5 или HTTP прокси. Трафик пойдёт через него."
+                android:textColor="#888888"
+                android:textSize="12sp" />
+
+            <CheckBox
+                android:id="@+id/cb_upstream_proxy"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_marginTop="4dp"
+                android:buttonTint="#FF9800"
+                android:text="Использовать внешний прокси"
+                android:textColor="#E0E0E0"
+                android:textSize="15sp" />
+
+            <RadioGroup
+                android:id="@+id/rg_upstream_type"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/rb_upstream_socks5"
+                    android:layout_width="0dp"
+                    android:layout_height="40dp"
+                    android:layout_weight="1"
+                    android:buttonTint="#FF9800"
+                    android:checked="true"
+                    android:text="SOCKS5"
+                    android:textColor="#E0E0E0"
+                    android:textSize="14sp" />
+
+                <RadioButton
+                    android:id="@+id/rb_upstream_http"
+                    android:layout_width="0dp"
+                    android:layout_height="40dp"
+                    android:layout_weight="1"
+                    android:buttonTint="#FF9800"
+                    android:text="HTTP CONNECT"
+                    android:textColor="#E0E0E0"
+                    android:textSize="14sp" />
+
+            </RadioGroup>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Адрес прокси (host:port)"
+                android:textColor="#888888"
+                android:textSize="12sp" />
+
+            <EditText
+                android:id="@+id/et_upstream_addr"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/edit_bg"
+                android:hint="proxy.example.com:1080"
+                android:inputType="textUri"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:singleLine="true"
+                android:textColor="#E0E0E0"
+                android:textColorHint="#555555"
+                android:textSize="14sp" />
 
         </LinearLayout>
 

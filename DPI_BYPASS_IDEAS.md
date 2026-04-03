@@ -8,22 +8,29 @@ DPI (Deep Packet Inspection) блокирует WebSocket-подключения
 ## Реализованные варианты
 
 ### 1. TLS-фрагментация ClientHello ✅ (реализовано)
-- **Суть**: Разбиваем TLS ClientHello на мелкие TCP-сегменты
-- **Как**: FragmentSocket перехватывает первый write и шлёт по 1+40 байт
-- **Почему работает**: DPI не собирает TCP-сегменты обратно для анализа SNI
-- **Аналоги**: GoodbyeDPI, Zapret, DPITunnel, PowerTunnel
+- **Суть**: Разбиваем TLS ClientHello на мелкие TCP-сегменты с задержками
+- **Как**: FragmentSocket перехватывает первый write и шлёт по 1+50 байт
+- **Стратегии**: DELAY (200мс), MOBILE (3.5с), AGGRESSIVE (побайтово), SIMPLE (без задержек)
+- **Результат**: Работает на WiFi (DELAY), не работает на мобильной сети (ТСПУ реассемблирует TCP)
 - **Файл**: `FragmentSocket.java`
+
+### 2. Убрать SNI из ClientHello (NO_SNI) ✅ (реализовано)
+- **Суть**: Передаём IP вместо hostname + очищаем serverNames → ClientHello без SNI extension
+- **Как**: `sslFactory.createSocket(socket, ip, 443, true)` + `params.setServerNames(emptyList())`
+- **Почему может работать**: DPI фильтрует по SNI domain — без SNI нечего фильтровать
+- **Риск**: Сервер может потребовать SNI (но Telegram на выделенных IP, не виртуальный хостинг)
+- **Файл**: `RawWebSocket.java`
+
+### 3. Подмена SNI (FAKE_SNI / Domain Fronting) ✅ (реализовано)
+- **Суть**: В TLS SNI указываем `www.google.com`, а реальный Host — в HTTP внутри TLS
+- **Как**: `params.setServerNames(singletonList(new SNIHostName("www.google.com")))`
+- **Почему может работать**: DPI видит google.com и пропускает; HTTP Host внутри TLS недоступен DPI
+- **Риск**: Сервер отклонит TLS handshake (но у нас trustAll, принимаем любой сертификат)
+- **Файл**: `RawWebSocket.java`
 
 ## Нереализованные варианты (на будущее)
 
-### 2. Domain Fronting
-- **Суть**: В TLS SNI указываем нейтральный домен (google.com), а реальный Host — в HTTP
-- **Плюсы**: Обходит SNI-фильтрацию
-- **Минусы**: Telegram сервер может отклонить неправильный SNI; крупные CDN запретили
-- **Сложность**: Низкая
-- **Оценка**: Может не работать, зависит от конфигурации Telegram серверов
-
-### 3. Encrypted Client Hello (ECH)
+### 4. Encrypted Client Hello (ECH)
 - **Суть**: Шифрует SNI — DPI не видит домен
 - **Плюсы**: Полноценное решение на уровне протокола
 - **Минусы**: Нужна поддержка сервера + Android (не все версии TLS), нужен DNS-запрос для ECH-ключей
