@@ -152,8 +152,59 @@ public class RawWebSocket {
         }
 
         ssl.setUseClientMode(true);
+
+        // Маскировка TLS fingerprint под браузер Chrome
+        // DPI может блокировать не по SNI, а по JA3 fingerprint (набор cipher suites, extensions)
+        // Java SSLSocket имеет уникальный fingerprint, отличный от браузера
+        try {
+            // Предпочитаем TLS 1.3 (как Chrome) — другой формат ClientHello
+            String[] protocols = ssl.getSupportedProtocols();
+            java.util.List<String> preferred = new java.util.ArrayList<>();
+            for (String p : protocols) {
+                if (p.equals("TLSv1.3")) preferred.add(0, p);
+                else if (p.equals("TLSv1.2")) preferred.add(p);
+            }
+            if (!preferred.isEmpty()) {
+                ssl.setEnabledProtocols(preferred.toArray(new String[0]));
+            }
+
+            // Cipher suites как у Chrome (современные, AEAD)
+            String[] supportedCiphers = ssl.getSupportedCipherSuites();
+            java.util.List<String> chromeLike = new java.util.ArrayList<>();
+            // TLS 1.3 ciphers (Chrome порядок)
+            String[] chromeOrder = {
+                "TLS_AES_128_GCM_SHA256",
+                "TLS_AES_256_GCM_SHA384",
+                "TLS_CHACHA20_POLY1305_SHA256",
+                "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+                "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+                "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+            };
+            java.util.Set<String> supported = new java.util.HashSet<>(java.util.Arrays.asList(supportedCiphers));
+            for (String c : chromeOrder) {
+                if (supported.contains(c)) chromeLike.add(c);
+            }
+            if (chromeLike.size() >= 3) {
+                ssl.setEnabledCipherSuites(chromeLike.toArray(new String[0]));
+            }
+
+            // ALPN — как браузер (h2, http/1.1)
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                javax.net.ssl.SSLParameters params = ssl.getSSLParameters();
+                params.setApplicationProtocols(new String[]{"h2", "http/1.1"});
+                ssl.setSSLParameters(params);
+            }
+        } catch (Exception e) {
+            AppLog.w(TAG, "TLS fingerprint tuning failed: " + e.getMessage());
+        }
+
         ssl.startHandshake();
-        AppLog.d(TAG, "WS: TLS handshake OK via " + name);
+        AppLog.d(TAG, "WS: TLS handshake OK via " + name
+                + " proto=" + ssl.getSession().getProtocol()
+                + " cipher=" + ssl.getSession().getCipherSuite());
 
         RawWebSocket ws = new RawWebSocket(ssl);
 
