@@ -553,8 +553,9 @@ public class ProxyEngine {
                     }
                     notifyStats();
                 }
+                AppLog.w(TAG, "bridgeWs UP: client stream ended normally");
             } catch (Exception e) {
-                // нормальное закрытие — не логируем
+                AppLog.w(TAG, "bridgeWs UP error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             } finally {
                 ws.close();
                 try {
@@ -566,16 +567,27 @@ public class ProxyEngine {
 
         Thread downThread = new Thread(() -> {
             try {
+                boolean gotData = false;
                 while (ws.isAlive()) {
                     byte[] data = ws.recv();
-                    if (data == null) break;
+                    if (data == null) {
+                        AppLog.w(TAG, "bridgeWs DOWN: recv null (CLOSE frame), gotData=" + gotData);
+                        break;
+                    }
+                    if (!gotData) {
+                        AppLog.i(TAG, "bridgeWs DOWN: first data " + data.length + " bytes");
+                        gotData = true;
+                    }
                     bytesDown.addAndGet(data.length);
                     out.write(data);
                     out.flush();
                     notifyStats();
                 }
+                if (!gotData) {
+                    AppLog.w(TAG, "bridgeWs DOWN: ended without receiving any data!");
+                }
             } catch (Exception e) {
-                // нормальное закрытие
+                AppLog.w(TAG, "bridgeWs DOWN error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             } finally {
                 ws.close();
                 try {
