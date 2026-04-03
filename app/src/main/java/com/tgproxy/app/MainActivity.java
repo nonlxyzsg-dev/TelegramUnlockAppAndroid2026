@@ -131,6 +131,12 @@ public class MainActivity extends AppCompatActivity {
         applyRelay();
         applyUpstreamProxy();
 
+        // Автоприменение relay при изменении галочки
+        cbRelay.setOnCheckedChangeListener((v, checked) -> {
+            prefs.edit().putBoolean("relay_enabled", checked).apply();
+            applyRelay();
+        });
+
         btnStart.setOnClickListener(v -> startProxy());
         btnStop.setOnClickListener(v -> stopProxy());
 
@@ -277,6 +283,7 @@ public class MainActivity extends AppCompatActivity {
         e.apply();
 
         // Применяем настройки
+        android.util.Log.i("TGProxy", "saveSettings: relay_checked=" + cbRelay.isChecked() + " relay_url=[" + etRelayUrl.getText().toString().trim() + "]");
         applyUpstreamProxy();
         applyRelay();
     }
@@ -299,6 +306,7 @@ public class MainActivity extends AppCompatActivity {
     private void applyRelay() {
         boolean enabled = cbRelay.isChecked();
         String url = etRelayUrl.getText().toString().trim();
+        android.util.Log.i("TGProxy", "applyRelay: enabled=" + enabled + " url=[" + url + "]");
         if (enabled && !url.isEmpty()) {
             RawWebSocket.setRelayUrl(url);
         } else {
