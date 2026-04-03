@@ -345,7 +345,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
-                android:text="IP Telegram DC (\u0434\u043b\u044f \u043f\u0438\u043d\u0433\u0430)"
+                android:text="IP Telegram DC (для WS-теста)"
                 android:textColor="#888888"
                 android:textSize="12sp" />
 
