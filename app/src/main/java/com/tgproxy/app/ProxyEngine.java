@@ -249,7 +249,7 @@ public class ProxyEngine {
         if (ws == null) {
             for (String domain : domains) {
                 try {
-                    ws = RawWebSocket.connect(targetIp, domain, 5000);
+                    ws = RawWebSocket.connect(targetIp, domain, 10000);
                     allRedirects = false;
                     break;
                 } catch (RawWebSocket.WsRedirectException e) {
@@ -348,7 +348,7 @@ public class ProxyEngine {
         if (ws == null) {
             for (String domain : domains) {
                 try {
-                    ws = RawWebSocket.connect(targetIp, domain, 5000);
+                    ws = RawWebSocket.connect(targetIp, domain, 10000);
                     allRedirects = false;
                     break;
                 } catch (RawWebSocket.WsRedirectException e) {

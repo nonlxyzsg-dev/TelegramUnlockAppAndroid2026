@@ -27,6 +27,7 @@ public class WsPool {
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
     private volatile boolean running = true;
+    private volatile boolean sweeperStarted = false;
 
     public void warmup() {
         for (int dc = 1; dc <= 5; dc++) {
@@ -38,29 +39,32 @@ public class WsPool {
             }
         }
 
-        Thread sweeper = new Thread(() -> {
-            while (running) {
-                try {
-                    Thread.sleep(15000);
-                    long now = System.currentTimeMillis() / 1000;
-                    synchronized (buckets) {
-                        for (List<Entry> b : buckets.values()) {
-                            b.removeIf(e -> {
-                                boolean expired = (now - e.time) > TgConstants.POOL_AGE;
-                                if (expired || !e.ws.isAlive()) {
-                                    e.ws.close();
-                                    return true;
-                                }
-                                return false;
-                            });
+        if (!sweeperStarted) {
+            sweeperStarted = true;
+            Thread sweeper = new Thread(() -> {
+                while (running) {
+                    try {
+                        Thread.sleep(30000);
+                        long now = System.currentTimeMillis() / 1000;
+                        synchronized (buckets) {
+                            for (List<Entry> b : buckets.values()) {
+                                b.removeIf(e -> {
+                                    boolean expired = (now - e.time) > TgConstants.POOL_AGE;
+                                    if (expired || !e.ws.isAlive()) {
+                                        e.ws.close();
+                                        return true;
+                                    }
+                                    return false;
+                                });
+                            }
                         }
+                    } catch (Exception ignored) {
                     }
-                } catch (Exception ignored) {
                 }
-            }
-        });
-        sweeper.setDaemon(true);
-        sweeper.start();
+            });
+            sweeper.setDaemon(true);
+            sweeper.start();
+        }
     }
 
     public void stop() {

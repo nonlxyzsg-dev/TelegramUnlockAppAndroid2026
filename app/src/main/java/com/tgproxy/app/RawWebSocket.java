@@ -23,7 +23,6 @@ public class RawWebSocket {
     private static final int OP_PONG = 0xA;
 
     private static final int KEEPALIVE_INTERVAL = 20_000;
-    private static final int SOCKET_TIMEOUT = 45_000;
 
     private final InputStream in;
     private final OutputStream out;
@@ -126,7 +125,7 @@ public class RawWebSocket {
         }
 
         if (statusCode == 101) {
-            ssl.setSoTimeout(SOCKET_TIMEOUT);
+            ssl.setSoTimeout(0);
             ws.startKeepalive();
             return ws;
         }
