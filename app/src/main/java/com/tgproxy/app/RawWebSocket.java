@@ -81,7 +81,10 @@ public class RawWebSocket {
         raw.setReceiveBufferSize(262144);
         raw.setSendBufferSize(262144);
 
-        SSLSocket ssl = (SSLSocket) sslFactory.createSocket(raw, domain, 443, true);
+        // TLS-фрагментация: разбиваем ClientHello на мелкие TCP-сегменты
+        // чтобы DPI не мог прочитать SNI (имя домена) из одного пакета
+        Socket fragmented = new FragmentSocket(raw, 1, 40);
+        SSLSocket ssl = (SSLSocket) sslFactory.createSocket(fragmented, domain, 443, true);
         ssl.setUseClientMode(true);
         ssl.startHandshake();
         AppLog.d(TAG, "WS: TLS handshake done with " + domain);
