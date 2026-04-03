@@ -1,7 +1,5 @@
 package com.tgproxy.app;
 
-import android.util.Log;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -101,24 +99,24 @@ public class WsPool {
         synchronized (buckets) {
             List<Entry> bucket = buckets.get(key);
             int bucketSize = bucket == null ? 0 : bucket.size();
-            Log.d("TGProxy", "Pool get key=" + key + " bucketSize=" + bucketSize);
+            AppLog.d("TGProxy", "Pool get key=" + key + " bucketSize=" + bucketSize);
             if (bucket != null) {
                 while (!bucket.isEmpty()) {
                     Entry e = bucket.remove(0);
                     long age = now - e.time;
                     boolean alive = e.ws.isAlive();
                     if (age > TgConstants.POOL_AGE || !alive) {
-                        Log.d("TGProxy", "Pool: discarding stale WS age=" + age + " alive=" + alive);
+                        AppLog.d("TGProxy", "Pool: discarding stale WS age=" + age + " alive=" + alive);
                         e.ws.close();
                         continue;
                     }
-                    Log.d("TGProxy", "Pool: returning WS age=" + age + "s");
+                    AppLog.d("TGProxy", "Pool: returning WS age=" + age + "s");
                     refill(key, tip, doms);
                     return e.ws;
                 }
             }
         }
-        Log.d("TGProxy", "Pool: no WS available for key=" + key);
+        AppLog.d("TGProxy", "Pool: no WS available for key=" + key);
         refill(key, tip, doms);
         return null;
     }

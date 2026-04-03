@@ -1,6 +1,6 @@
 package com.tgproxy.app;
 
-import android.util.Log;
+// Logging via AppLog (buffered + android.util.Log)
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -78,7 +78,7 @@ public class ProxyEngine {
             serverSocket.bind(new InetSocketAddress(boundIp, port));
         }
 
-        Log.i(TAG, "Engine started on " + boundIp + ":" + port + " mode=" + mode);
+        AppLog.i(TAG, "Engine started on " + boundIp + ":" + port + " mode=" + mode);
 
         pool = Executors.newCachedThreadPool();
         wsPool.warmup();
@@ -99,7 +99,7 @@ public class ProxyEngine {
 
     public void stop() {
         running = false;
-        Log.i(TAG, "Engine stopping");
+        AppLog.i(TAG, "Engine stopping");
         try {
             if (serverSocket != null) serverSocket.close();
         } catch (Exception ignored) {
@@ -130,7 +130,7 @@ public class ProxyEngine {
 
             byte[] hdr = readExactly(in, 2);
             if (hdr[0] != 5) {
-                Log.w(TAG, "Non-SOCKS5 connection, closing");
+                AppLog.w(TAG, "Non-SOCKS5 connection, closing");
                 client.close();
                 return;
             }
@@ -169,10 +169,10 @@ public class ProxyEngine {
             byte[] portBytes = readExactly(in, 2);
             int port = ((portBytes[0] & 0xFF) << 8) | (portBytes[1] & 0xFF);
 
-            Log.d(TAG, "SOCKS5 CONNECT " + dst + ":" + port);
+            AppLog.d(TAG, "SOCKS5 CONNECT " + dst + ":" + port);
 
             if (dst.contains(":")) {
-                Log.w(TAG, "IPv6 rejected: " + dst);
+                AppLog.w(TAG, "IPv6 rejected: " + dst);
                 out.write(socks5Reply(5));
                 out.flush();
                 client.close();
@@ -188,7 +188,7 @@ public class ProxyEngine {
                     break;
             }
         } catch (Exception e) {
-            Log.e(TAG, "handleClient error: " + e.getMessage());
+            AppLog.e(TAG, "handleClient error: " + e.getMessage());
             errors.incrementAndGet();
         } finally {
             activeSockets.remove(client);
@@ -201,7 +201,7 @@ public class ProxyEngine {
 
     private void handleOriginal(Socket client, InputStream in, OutputStream out, String dst, int port) throws Exception {
         boolean isTg = TgConstants.isTelegramIp(dst);
-        Log.d(TAG, "handleOriginal dst=" + dst + ":" + port + " isTelegram=" + isTg);
+        AppLog.d(TAG, "handleOriginal dst=" + dst + ":" + port + " isTelegram=" + isTg);
 
         if (!isTg) {
             handlePassthrough(client, in, out, dst, port);
@@ -213,7 +213,7 @@ public class ProxyEngine {
 
         byte[] init = readExactly(in, 64);
         if (TgConstants.isHttp(init)) {
-            Log.w(TAG, "HTTP detected, closing");
+            AppLog.w(TAG, "HTTP detected, closing");
             client.close();
             return;
         }
@@ -225,20 +225,20 @@ public class ProxyEngine {
         if (dcInfo != null) {
             dc = dcInfo[0];
             isMedia = dcInfo[1] == 1;
-            Log.d(TAG, "dcFromInit: dc=" + dc + " media=" + isMedia);
+            AppLog.d(TAG, "dcFromInit: dc=" + dc + " media=" + isMedia);
         } else {
-            Log.d(TAG, "dcFromInit returned null");
+            AppLog.d(TAG, "dcFromInit returned null");
         }
 
         if (dcInfo == null && TgConstants.IP_TO_DC.containsKey(dst)) {
             int[] info = TgConstants.IP_TO_DC.get(dst);
             dc = info[0];
             isMedia = info[1] == 1;
-            Log.d(TAG, "IP_TO_DC fallback: dc=" + dc + " media=" + isMedia);
+            AppLog.d(TAG, "IP_TO_DC fallback: dc=" + dc + " media=" + isMedia);
         }
 
         if (dc < 1 || dc > 5 || !TgConstants.DC_IPS.containsKey(dc)) {
-            Log.w(TAG, "Invalid DC=" + dc + ", TCP fallback");
+            AppLog.w(TAG, "Invalid DC=" + dc + ", TCP fallback");
             tcpFallback(client, in, out, dst, port, init);
             return;
         }
@@ -247,7 +247,7 @@ public class ProxyEngine {
         long now = System.currentTimeMillis();
 
         if (wsBlacklist.contains(dcKey)) {
-            Log.w(TAG, "DC " + dcKey + " blacklisted, TCP fallback");
+            AppLog.w(TAG, "DC " + dcKey + " blacklisted, TCP fallback");
             tcpFallback(client, in, out, dst, port, init);
             return;
         }
@@ -255,7 +255,7 @@ public class ProxyEngine {
         Long fu = failUntil.get(dcKey);
         if (fu != null) {
             if (now < fu) {
-                Log.w(TAG, "DC " + dcKey + " in cooldown, TCP fallback");
+                AppLog.w(TAG, "DC " + dcKey + " in cooldown, TCP fallback");
                 tcpFallback(client, in, out, dst, port, init);
                 return;
             }
@@ -265,30 +265,30 @@ public class ProxyEngine {
         String[] domains = TgConstants.wsDomains(dc, isMedia);
         String targetIp = TgConstants.DC_IPS.get(dc);
 
-        Log.d(TAG, "Trying WS pool for dc=" + dc + " ip=" + targetIp);
+        AppLog.d(TAG, "Trying WS pool for dc=" + dc + " ip=" + targetIp);
         RawWebSocket ws = wsPool.get(dc, isMedia, targetIp, domains);
         boolean hadRedirect = false;
         boolean allRedirects = true;
 
         if (ws != null) {
-            Log.d(TAG, "Got WS from pool, alive=" + ws.isAlive());
+            AppLog.d(TAG, "Got WS from pool, alive=" + ws.isAlive());
         } else {
-            Log.d(TAG, "Pool empty, trying direct connect");
+            AppLog.d(TAG, "Pool empty, trying direct connect");
             for (String domain : domains) {
                 try {
-                    Log.d(TAG, "WS connect: " + targetIp + " domain=" + domain);
+                    AppLog.d(TAG, "WS connect: " + targetIp + " domain=" + domain);
                     ws = RawWebSocket.connect(targetIp, domain, 10000);
                     allRedirects = false;
-                    Log.d(TAG, "WS connect SUCCESS");
+                    AppLog.d(TAG, "WS connect SUCCESS");
                     break;
                 } catch (RawWebSocket.WsRedirectException e) {
                     hadRedirect = true;
-                    Log.w(TAG, "WS redirect " + e.statusCode + " domain=" + domain);
+                    AppLog.w(TAG, "WS redirect " + e.statusCode + " domain=" + domain);
                     errors.incrementAndGet();
                     continue;
                 } catch (Exception e) {
                     allRedirects = false;
-                    Log.e(TAG, "WS connect FAIL domain=" + domain + ": " + e.getMessage());
+                    AppLog.e(TAG, "WS connect FAIL domain=" + domain + ": " + e.getMessage());
                     errors.incrementAndGet();
                     break;
                 }
@@ -298,10 +298,10 @@ public class ProxyEngine {
         if (ws == null) {
             if (hadRedirect && allRedirects) {
                 wsBlacklist.add(dcKey);
-                Log.w(TAG, "All redirects, blacklisting DC " + dcKey);
+                AppLog.w(TAG, "All redirects, blacklisting DC " + dcKey);
             } else {
                 failUntil.put(dcKey, now + (long) (TgConstants.COOLDOWN * 1000));
-                Log.w(TAG, "WS failed, cooldown DC " + dcKey);
+                AppLog.w(TAG, "WS failed, cooldown DC " + dcKey);
             }
             tcpFallback(client, in, out, dst, port, init);
             return;
@@ -310,15 +310,15 @@ public class ProxyEngine {
         failUntil.remove(dcKey);
         connWs.incrementAndGet();
 
-        Log.i(TAG, "Sending init (" + init.length + " bytes) via WS to dc=" + dc);
+        AppLog.i(TAG, "Sending init (" + init.length + " bytes) via WS to dc=" + dc);
         ws.send(init);
-        Log.d(TAG, "Starting bridgeWs for dc=" + dc);
+        AppLog.d(TAG, "Starting bridgeWs for dc=" + dc);
         bridgeWs(in, out, ws, null);
     }
 
     private void handlePython(Socket client, InputStream in, OutputStream out, String dst, int port) throws Exception {
         boolean isTg = TgConstants.isTelegramIp(dst);
-        Log.d(TAG, "handlePython dst=" + dst + ":" + port + " isTelegram=" + isTg);
+        AppLog.d(TAG, "handlePython dst=" + dst + ":" + port + " isTelegram=" + isTg);
 
         if (!isTg) {
             handlePassthrough(client, in, out, dst, port);
@@ -330,7 +330,7 @@ public class ProxyEngine {
 
         byte[] init = readExactly(in, 64);
         if (TgConstants.isHttp(init)) {
-            Log.w(TAG, "HTTP detected, closing");
+            AppLog.w(TAG, "HTTP detected, closing");
             client.close();
             return;
         }
@@ -343,9 +343,9 @@ public class ProxyEngine {
         if (dcInfo != null) {
             dc = dcInfo[0];
             isMedia = dcInfo[1] == 1;
-            Log.d(TAG, "dcFromInit: dc=" + dc + " media=" + isMedia);
+            AppLog.d(TAG, "dcFromInit: dc=" + dc + " media=" + isMedia);
         } else {
-            Log.d(TAG, "dcFromInit returned null");
+            AppLog.d(TAG, "dcFromInit returned null");
         }
 
         if (dcInfo == null && TgConstants.IP_TO_DC.containsKey(dst)) {
@@ -355,12 +355,12 @@ public class ProxyEngine {
             if (TgConstants.DC_IPS.containsKey(dc)) {
                 init = CryptoUtils.patchDc(init, isMedia ? dc : -dc);
                 patched = true;
-                Log.d(TAG, "Patched DC: " + dc + " media=" + isMedia);
+                AppLog.d(TAG, "Patched DC: " + dc + " media=" + isMedia);
             }
         }
 
         if (dc < 1 || dc > 5 || !TgConstants.DC_IPS.containsKey(dc)) {
-            Log.w(TAG, "Invalid DC=" + dc + ", TCP fallback");
+            AppLog.w(TAG, "Invalid DC=" + dc + ", TCP fallback");
             tcpFallback(client, in, out, dst, port, init);
             return;
         }
@@ -369,7 +369,7 @@ public class ProxyEngine {
         long now = System.currentTimeMillis();
 
         if (wsBlacklist.contains(dcKey)) {
-            Log.w(TAG, "DC " + dcKey + " blacklisted, TCP fallback");
+            AppLog.w(TAG, "DC " + dcKey + " blacklisted, TCP fallback");
             tcpFallback(client, in, out, dst, port, init);
             return;
         }
@@ -377,7 +377,7 @@ public class ProxyEngine {
         Long fu = failUntil.get(dcKey);
         if (fu != null) {
             if (now < fu) {
-                Log.w(TAG, "DC " + dcKey + " in cooldown, TCP fallback");
+                AppLog.w(TAG, "DC " + dcKey + " in cooldown, TCP fallback");
                 tcpFallback(client, in, out, dst, port, init);
                 return;
             }
@@ -387,30 +387,30 @@ public class ProxyEngine {
         String[] domains = TgConstants.wsDomains(dc, isMedia);
         String targetIp = TgConstants.DC_IPS.get(dc);
 
-        Log.d(TAG, "Trying WS pool for dc=" + dc + " ip=" + targetIp);
+        AppLog.d(TAG, "Trying WS pool for dc=" + dc + " ip=" + targetIp);
         RawWebSocket ws = wsPool.get(dc, isMedia, targetIp, domains);
         boolean hadRedirect = false;
         boolean allRedirects = true;
 
         if (ws != null) {
-            Log.d(TAG, "Got WS from pool, alive=" + ws.isAlive());
+            AppLog.d(TAG, "Got WS from pool, alive=" + ws.isAlive());
         } else {
-            Log.d(TAG, "Pool empty, trying direct connect");
+            AppLog.d(TAG, "Pool empty, trying direct connect");
             for (String domain : domains) {
                 try {
-                    Log.d(TAG, "WS connect: " + targetIp + " domain=" + domain);
+                    AppLog.d(TAG, "WS connect: " + targetIp + " domain=" + domain);
                     ws = RawWebSocket.connect(targetIp, domain, 10000);
                     allRedirects = false;
-                    Log.d(TAG, "WS connect SUCCESS");
+                    AppLog.d(TAG, "WS connect SUCCESS");
                     break;
                 } catch (RawWebSocket.WsRedirectException e) {
                     hadRedirect = true;
-                    Log.w(TAG, "WS redirect " + e.statusCode + " domain=" + domain);
+                    AppLog.w(TAG, "WS redirect " + e.statusCode + " domain=" + domain);
                     errors.incrementAndGet();
                     continue;
                 } catch (Exception e) {
                     allRedirects = false;
-                    Log.e(TAG, "WS connect FAIL domain=" + domain + ": " + e.getMessage());
+                    AppLog.e(TAG, "WS connect FAIL domain=" + domain + ": " + e.getMessage());
                     errors.incrementAndGet();
                     break;
                 }
@@ -420,10 +420,10 @@ public class ProxyEngine {
         if (ws == null) {
             if (hadRedirect && allRedirects) {
                 wsBlacklist.add(dcKey);
-                Log.w(TAG, "All redirects, blacklisting DC " + dcKey);
+                AppLog.w(TAG, "All redirects, blacklisting DC " + dcKey);
             } else {
                 failUntil.put(dcKey, now + (long) (TgConstants.COOLDOWN * 1000));
-                Log.w(TAG, "WS failed, cooldown DC " + dcKey);
+                AppLog.w(TAG, "WS failed, cooldown DC " + dcKey);
             }
             tcpFallback(client, in, out, dst, port, init);
             return;
@@ -432,24 +432,24 @@ public class ProxyEngine {
         failUntil.remove(dcKey);
         connWs.incrementAndGet();
 
-        Log.i(TAG, "Sending init (" + init.length + " bytes) via WS to dc=" + dc + " patched=" + patched);
+        AppLog.i(TAG, "Sending init (" + init.length + " bytes) via WS to dc=" + dc + " patched=" + patched);
         ws.send(init);
-        Log.d(TAG, "Starting bridgeWs for dc=" + dc);
+        AppLog.d(TAG, "Starting bridgeWs for dc=" + dc);
         bridgeWs(in, out, ws, patched ? init : null);
     }
 
     public void refreshPool() {
-        Log.d(TAG, "refreshPool called");
+        AppLog.d(TAG, "refreshPool called");
         wsPool.refresh();
     }
 
     public void clearPool() {
-        Log.d(TAG, "clearPool called");
+        AppLog.d(TAG, "clearPool called");
         wsPool.clear();
     }
 
     private void handlePassthrough(Socket client, InputStream in, OutputStream out, String dst, int port) throws Exception {
-        Log.d(TAG, "Passthrough to " + dst + ":" + port);
+        AppLog.d(TAG, "Passthrough to " + dst + ":" + port);
         Socket remote = new Socket();
         try {
             remote.connect(new InetSocketAddress(dst, port), 10000);
@@ -458,7 +458,7 @@ public class ProxyEngine {
             remote.setTcpNoDelay(true);
             remote.setKeepAlive(true);
         } catch (Exception e) {
-            Log.e(TAG, "Passthrough connect failed: " + e.getMessage());
+            AppLog.e(TAG, "Passthrough connect failed: " + e.getMessage());
             try {
                 out.write(socks5Reply(5));
                 out.flush();
@@ -493,7 +493,7 @@ public class ProxyEngine {
 
     private void tcpFallback(Socket client, InputStream in, OutputStream out, String dst, int port, byte[] init) {
         connTcp.incrementAndGet();
-        Log.i(TAG, "TCP fallback to " + dst + ":" + port);
+        AppLog.i(TAG, "TCP fallback to " + dst + ":" + port);
         try {
             Socket remote = new Socket();
             remote.connect(new InetSocketAddress(dst, port), 10000);
@@ -505,7 +505,7 @@ public class ProxyEngine {
             OutputStream remoteOut = remote.getOutputStream();
             remoteOut.write(init);
             remoteOut.flush();
-            Log.d(TAG, "TCP fallback connected, bridging");
+            AppLog.d(TAG, "TCP fallback connected, bridging");
 
             Thread t1 = new Thread(() -> pipeWithStats(in, remoteOut, true));
             Thread t2 = new Thread(() -> pipeWithStats(remoteIn, out, false));
@@ -524,7 +524,7 @@ public class ProxyEngine {
             } catch (Exception ignored) {
             }
         } catch (Exception e) {
-            Log.e(TAG, "TCP fallback error: " + e.getMessage());
+            AppLog.e(TAG, "TCP fallback error: " + e.getMessage());
             errors.incrementAndGet();
         }
     }
@@ -558,9 +558,9 @@ public class ProxyEngine {
                     }
                     notifyStats();
                 }
-                Log.d(TAG, "bridgeWs upThread: client stream ended");
+                AppLog.d(TAG, "bridgeWs upThread: client stream ended");
             } catch (Exception e) {
-                Log.e(TAG, "bridgeWs upThread error: " + e.getMessage());
+                AppLog.e(TAG, "bridgeWs upThread error: " + e.getMessage());
             } finally {
                 ws.close();
                 try {
@@ -572,11 +572,11 @@ public class ProxyEngine {
 
         Thread downThread = new Thread(() -> {
             try {
-                Log.d(TAG, "bridgeWs downThread: waiting for WS data...");
+                AppLog.d(TAG, "bridgeWs downThread: waiting for WS data...");
                 while (ws.isAlive()) {
                     byte[] data = ws.recv();
                     if (data == null) {
-                        Log.w(TAG, "bridgeWs downThread: recv returned null (WS closed)");
+                        AppLog.w(TAG, "bridgeWs downThread: recv returned null (WS closed)");
                         break;
                     }
                     bytesDown.addAndGet(data.length);
@@ -584,9 +584,9 @@ public class ProxyEngine {
                     out.flush();
                     notifyStats();
                 }
-                Log.d(TAG, "bridgeWs downThread: WS no longer alive");
+                AppLog.d(TAG, "bridgeWs downThread: WS no longer alive");
             } catch (Exception e) {
-                Log.e(TAG, "bridgeWs downThread error: " + e.getMessage());
+                AppLog.e(TAG, "bridgeWs downThread error: " + e.getMessage());
             } finally {
                 ws.close();
                 try {
@@ -607,7 +607,7 @@ public class ProxyEngine {
             downThread.join();
         } catch (InterruptedException ignored) {
         }
-        Log.d(TAG, "bridgeWs finished");
+        AppLog.d(TAG, "bridgeWs finished");
     }
 
     private void pipe(InputStream in, OutputStream out) {

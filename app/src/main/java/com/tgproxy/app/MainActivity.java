@@ -131,6 +131,11 @@ public class MainActivity extends AppCompatActivity {
         tvTgChannel.setOnClickListener(v -> openLink("https://t.me/jar_with_neurons"));
         tvGithub.setOnClickListener(v -> openLink("https://github.com/nonlxyzsg-dev/TelegramUnlockAppAndroid2026"));
 
+        Button btnLogs = findViewById(R.id.btn_logs);
+        btnLogs.setOnClickListener(v -> {
+            startActivity(new Intent(this, LogActivity.class));
+        });
+
         TextView tvDiagResult = findViewById(R.id.tv_diag_result);
         Button btnDiagnose = findViewById(R.id.btn_diagnose);
         btnDiagnose.setOnClickListener(v -> {

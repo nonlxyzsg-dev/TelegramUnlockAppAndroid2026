@@ -1,6 +1,6 @@
 package com.tgproxy.app;
 
-import android.util.Log;
+// Logging via AppLog
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -73,7 +73,7 @@ public class RawWebSocket {
     };
 
     public static RawWebSocket connect(String ip, String domain, int timeout) throws Exception {
-        Log.d(TAG, "WS: connecting to " + ip + ":443 domain=" + domain + " timeout=" + timeout);
+        AppLog.d(TAG, "WS: connecting to " + ip + ":443 domain=" + domain + " timeout=" + timeout);
         Socket raw = new Socket();
         raw.connect(new java.net.InetSocketAddress(ip, 443), timeout);
         raw.setSoTimeout(timeout);
@@ -84,7 +84,7 @@ public class RawWebSocket {
         SSLSocket ssl = (SSLSocket) sslFactory.createSocket(raw, domain, 443, true);
         ssl.setUseClientMode(true);
         ssl.startHandshake();
-        Log.d(TAG, "WS: TLS handshake done with " + domain);
+        AppLog.d(TAG, "WS: TLS handshake done with " + domain);
 
         RawWebSocket ws = new RawWebSocket(ssl);
 
@@ -125,7 +125,7 @@ public class RawWebSocket {
             }
         }
 
-        Log.d(TAG, "WS: handshake response status=" + statusCode + " domain=" + domain);
+        AppLog.d(TAG, "WS: handshake response status=" + statusCode + " domain=" + domain);
 
         if (statusCode == 101) {
             ssl.setSoTimeout(0);
@@ -191,7 +191,7 @@ public class RawWebSocket {
             }
 
             if (opcode == OP_CLOSE) {
-                Log.d(TAG, "WS recv: got CLOSE frame");
+                AppLog.d(TAG, "WS recv: got CLOSE frame");
                 closed = true;
                 try {
                     byte[] closeData = payload.length >= 2 ? Arrays.copyOf(payload, 2) : new byte[0];

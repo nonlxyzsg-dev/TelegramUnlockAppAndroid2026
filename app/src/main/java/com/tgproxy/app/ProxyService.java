@@ -211,12 +211,12 @@ public class ProxyService extends Service {
             networkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override
                 public void onAvailable(Network network) {
-                    android.util.Log.d("TGProxy", "Network onAvailable");
+                    AppLog.d("TGProxy", "Network onAvailable");
                 }
 
                 @Override
                 public void onLost(Network network) {
-                    android.util.Log.d("TGProxy", "Network onLost");
+                    AppLog.d("TGProxy", "Network onLost");
                 }
             };
             cm.registerNetworkCallback(new NetworkRequest.Builder().build(), networkCallback);

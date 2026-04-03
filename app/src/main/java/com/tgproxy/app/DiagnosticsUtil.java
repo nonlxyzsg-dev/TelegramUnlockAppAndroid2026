@@ -5,7 +5,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.os.Build;
-import android.util.Log;
+// Logging via AppLog
 
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
@@ -123,7 +123,7 @@ public class DiagnosticsUtil {
             long elapsed = System.currentTimeMillis() - start;
             return new long[]{elapsed, e.statusCode};
         } catch (Exception e) {
-            Log.d(TAG, "WS test failed " + ip + " " + domain + ": " + e.getMessage());
+            AppLog.d(TAG, "WS test failed " + ip + " " + domain + ": " + e.getMessage());
             return new long[]{-1, 0};
         }
     }
