@@ -110,6 +110,10 @@ public class RawWebSocket {
         }
     }
 
+    // Специальные стратегии (не кодируются как sniMode*100+frag)
+    private static final int STRATEGY_PLAIN_WS = 9999;    // Plain WS на порт 80 (без TLS)
+    private static final int STRATEGY_DNS_RESOLVE = 9998;  // DNS-резолв свежего IP
+
     // Таймаут при переборе стратегий (мс)
     private static final int PROBE_TIMEOUT = 10000;
 
@@ -130,21 +134,56 @@ public class RawWebSocket {
         // Ключ кэша: IP+домен (разные DC на одном IP могут вести себя по-разному)
         String cacheKey = ip + "/" + domain;
 
-        // Если этот IP+домен заблокирован по TLS — сразу exception, пусть идёт tcpFallback
+        // Если этот IP+домен заблокирован по TLS — пробуем plain WS и DNS
         if (blockedIps.contains(cacheKey)) {
+            // Plain WS на порт 80 (без TLS — ТСПУ не заблокирует)
+            try {
+                return connectPlainWs(ip, domain, timeout);
+            } catch (Exception e1) {
+                AppLog.w(TAG, "Plain WS failed for " + ip + ": " + e1.getMessage());
+            }
+            // DNS-резолв — может другой IP не заблокирован
+            try {
+                String dnsIp = resolveDns(domain);
+                if (dnsIp != null && !dnsIp.equals(ip) && !blockedIps.contains(dnsIp + "/" + domain)) {
+                    AppLog.i(TAG, "DNS-resolved IP: " + dnsIp + " (вместо " + ip + ")");
+                    return connectWithStrategy(dnsIp, domain, timeout, -2, SNI_NORMAL);
+                }
+            } catch (Exception e2) {
+                AppLog.w(TAG, "DNS fallback failed: " + e2.getMessage());
+            }
             throw new IOException(cacheKey + " blocked (TLS), using TCP fallback");
         }
 
         // Если уже нашли рабочую стратегию — используем с полным таймаутом
-        // Кодировка: sniMode * 100 + (fragStrategy + 10)
         if (workingStrategy >= 0) {
-            int cachedSni = workingStrategy / 100;
-            int cachedFrag = (workingStrategy % 100) - 10;
-            try {
-                return connectWithStrategy(ip, domain, timeout, cachedFrag, cachedSni);
-            } catch (Exception e) {
-                AppLog.w(TAG, "Cached strategy failed for " + ip + ", probing...");
-                workingStrategy = -1; // Сбрасываем — возможно сменилась сеть
+            if (workingStrategy == STRATEGY_PLAIN_WS) {
+                try {
+                    return connectPlainWs(ip, domain, timeout);
+                } catch (Exception e) {
+                    AppLog.w(TAG, "Cached PLAIN_WS failed, probing...");
+                    workingStrategy = -1;
+                }
+            } else if (workingStrategy == STRATEGY_DNS_RESOLVE) {
+                try {
+                    String dnsIp = resolveDns(domain);
+                    if (dnsIp != null) {
+                        return connectWithStrategy(dnsIp, domain, timeout, -2, SNI_NORMAL);
+                    }
+                } catch (Exception e) {
+                    AppLog.w(TAG, "Cached DNS strategy failed, probing...");
+                    workingStrategy = -1;
+                }
+            } else {
+                // Кодировка: sniMode * 100 + (fragStrategy + 10)
+                int cachedSni = workingStrategy / 100;
+                int cachedFrag = (workingStrategy % 100) - 10;
+                try {
+                    return connectWithStrategy(ip, domain, timeout, cachedFrag, cachedSni);
+                } catch (Exception e) {
+                    AppLog.w(TAG, "Cached strategy failed for " + ip + ", probing...");
+                    workingStrategy = -1;
+                }
             }
         }
 
@@ -184,9 +223,40 @@ public class RawWebSocket {
             }
         }
 
-        // Все стратегии провалились — запомнить IP+домен как заблокированный
+        // TLS-стратегии не сработали — пробуем plain WS на порт 80
+        AppLog.i(TAG, "All TLS strategies failed, trying plain WS on port 80...");
+        try {
+            RawWebSocket ws = connectPlainWs(ip, domain, PROBE_TIMEOUT);
+            workingStrategy = STRATEGY_PLAIN_WS;
+            AppLog.i(TAG, "Strategy 'PLAIN_WS:80' WORKS for " + ip + "!");
+            return ws;
+        } catch (WsRedirectException e) {
+            throw e;
+        } catch (Exception e) {
+            AppLog.w(TAG, "PLAIN_WS:80 failed for " + ip + ": " + e.getMessage());
+            lastError = e;
+        }
+
+        // DNS-резолв — свежий IP может не быть в списке блокировки
+        try {
+            String dnsIp = resolveDns(domain);
+            if (dnsIp != null && !dnsIp.equals(ip)) {
+                AppLog.i(TAG, "DNS resolved " + domain + " → " + dnsIp + " (hardcoded was " + ip + ")");
+                RawWebSocket ws = connectWithStrategy(dnsIp, domain, PROBE_TIMEOUT, -2, SNI_NORMAL);
+                workingStrategy = STRATEGY_DNS_RESOLVE;
+                AppLog.i(TAG, "Strategy 'DNS_RESOLVE' WORKS with IP " + dnsIp + "!");
+                return ws;
+            }
+        } catch (WsRedirectException e) {
+            throw e;
+        } catch (Exception e) {
+            AppLog.w(TAG, "DNS_RESOLVE failed: " + e.getMessage());
+            lastError = e;
+        }
+
+        // Всё провалилось — запомнить IP+домен как заблокированный
         blockedIps.add(cacheKey);
-        AppLog.w(TAG, cacheKey + " marked as TLS-blocked, will use TCP fallback");
+        AppLog.w(TAG, cacheKey + " marked as blocked, will use TCP fallback");
         throw lastError != null ? lastError : new IOException("All strategies failed for " + ip);
     }
 
@@ -568,6 +638,90 @@ public class RawWebSocket {
         }
 
         AppLog.d(TAG, "SOCKS5 tunnel established to " + host + ":" + port);
+    }
+
+    /**
+     * Plain WebSocket на порт 80 (без TLS).
+     * ТСПУ блокирует TLS к IP Telegram, но TCP:80 открыт.
+     * MTProto имеет собственное шифрование, TLS не обязателен.
+     */
+    private static RawWebSocket connectPlainWs(String ip, String domain, int timeout) throws Exception {
+        AppLog.d(TAG, "WS: trying PLAIN (no TLS) " + ip + ":80 domain=" + domain);
+
+        Socket raw = new Socket();
+        raw.connect(new java.net.InetSocketAddress(ip, 80), timeout);
+        raw.setSoTimeout(timeout);
+        raw.setTcpNoDelay(true);
+        raw.setReceiveBufferSize(262144);
+        raw.setSendBufferSize(262144);
+
+        RawWebSocket ws = new RawWebSocket(raw);
+
+        byte[] keyBytes = new byte[16];
+        rng.nextBytes(keyBytes);
+        String wsKey = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP);
+
+        // HTTP (не HTTPS) WebSocket upgrade на порт 80
+        String req = "GET /apiws HTTP/1.1\r\n" +
+                "Host: " + domain + "\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Key: " + wsKey + "\r\n" +
+                "Sec-WebSocket-Version: 13\r\n" +
+                "Sec-WebSocket-Protocol: binary\r\n" +
+                "Origin: http://web.telegram.org\r\n" +
+                "User-Agent: " + USER_AGENTS[rng.nextInt(USER_AGENTS.length)] + "\r\n" +
+                "\r\n";
+
+        ws.out.write(req.getBytes("UTF-8"));
+        ws.out.flush();
+
+        int statusCode = 0;
+        boolean firstLine = true;
+        while (true) {
+            String line = readLine(ws.in);
+            if (line == null || line.isEmpty()) break;
+            if (firstLine) {
+                String[] parts = line.split(" ", 3);
+                if (parts.length >= 2) {
+                    try { statusCode = Integer.parseInt(parts[1]); } catch (NumberFormatException ignored) {}
+                }
+                firstLine = false;
+            }
+        }
+
+        AppLog.d(TAG, "WS: plain handshake status=" + statusCode + " domain=" + domain);
+
+        if (statusCode == 101) {
+            raw.setSoTimeout(0);
+            return ws;
+        }
+
+        ws.closeQuiet();
+        if (statusCode == 301 || statusCode == 302 || statusCode == 303
+                || statusCode == 307 || statusCode == 308) {
+            throw new WsRedirectException(statusCode);
+        }
+        throw new IOException("Plain WS:80 handshake failed: " + statusCode);
+    }
+
+    /**
+     * DNS-резолв домена для получения свежего IP.
+     * Захардкоженные IP в TgConstants могут отличаться от актуальных.
+     */
+    private static String resolveDns(String domain) {
+        try {
+            java.net.InetAddress[] addrs = java.net.InetAddress.getAllByName(domain);
+            if (addrs.length > 0) {
+                String resolved = addrs[0].getHostAddress();
+                AppLog.d(TAG, "DNS: " + domain + " → " + resolved
+                        + " (всего " + addrs.length + " адресов)");
+                return resolved;
+            }
+        } catch (Exception e) {
+            AppLog.w(TAG, "DNS resolve failed for " + domain + ": " + e.getMessage());
+        }
+        return null;
     }
 
     private static void readFully(InputStream in, byte[] buf) throws IOException {
