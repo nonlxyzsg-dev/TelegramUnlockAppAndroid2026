@@ -81,7 +81,12 @@ public class ProxyEngine {
         AppLog.i(TAG, "Engine started on " + boundIp + ":" + port + " mode=" + mode);
 
         pool = Executors.newCachedThreadPool();
-        wsPool.warmup();
+        // При relay пул бесполезен — Cloudflare закрывает idle соединения
+        if (RawWebSocket.getRelayUrl() == null) {
+            wsPool.warmup();
+        } else {
+            AppLog.i(TAG, "Relay active — pool warmup skipped");
+        }
 
         pool.submit(() -> {
             while (running && !serverSocket.isClosed()) {
@@ -272,7 +277,8 @@ public class ProxyEngine {
         String[] domains = TgConstants.wsDomains(dc, isMedia);
         String targetIp = TgConstants.DC_IPS.get(dc);
 
-        RawWebSocket ws = wsPool.get(dc, isMedia, targetIp, domains);
+        // При relay не используем пул — каждое соединение свежее
+        RawWebSocket ws = (RawWebSocket.getRelayUrl() != null) ? null : wsPool.get(dc, isMedia, targetIp, domains);
         boolean hadRedirect = false;
         boolean allRedirects = true;
 
@@ -347,10 +353,8 @@ public class ProxyEngine {
             int[] info = TgConstants.IP_TO_DC.get(dst);
             dc = info[0];
             isMedia = info[1] == 1;
-            if (TgConstants.DC_IPS.containsKey(dc)) {
-                init = CryptoUtils.patchDc(init, isMedia ? dc : -dc);
-                patched = true;
-            }
+            // НЕ патчим init когда dcFromInit=null — пакет может быть не MTProto obfuscated
+            // Патч сломает данные
         }
 
         // Если DC не определён — угадываем по подсети
@@ -358,10 +362,6 @@ public class ProxyEngine {
             dc = TgConstants.guessDcByIp(dst);
             if (dc > 0) {
                 AppLog.i(TAG, "Guessed DC=" + dc + " for unknown IP " + dst);
-                if (TgConstants.DC_IPS.containsKey(dc)) {
-                    init = CryptoUtils.patchDc(init, dc);
-                    patched = true;
-                }
             }
         }
 
