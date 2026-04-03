@@ -1,5 +1,7 @@
 package com.tgproxy.app;
 
+import android.util.Log;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -17,19 +19,17 @@ import javax.net.ssl.X509TrustManager;
 
 public class RawWebSocket {
 
+    private static final String TAG = "TGProxy";
+
     private static final int OP_BINARY = 0x2;
     private static final int OP_CLOSE = 0x8;
     private static final int OP_PING = 0x9;
     private static final int OP_PONG = 0xA;
 
-    private static final int KEEPALIVE_INTERVAL = 20_000;
-
     private final InputStream in;
     private final OutputStream out;
     private final Socket socket;
     private volatile boolean closed = false;
-    private volatile long lastActivity = System.currentTimeMillis();
-    private Thread keepaliveThread;
     private static final SecureRandom rng = new SecureRandom();
 
     private static SSLSocketFactory sslFactory;
@@ -73,6 +73,7 @@ public class RawWebSocket {
     };
 
     public static RawWebSocket connect(String ip, String domain, int timeout) throws Exception {
+        Log.d(TAG, "WS: connecting to " + ip + ":443 domain=" + domain + " timeout=" + timeout);
         Socket raw = new Socket();
         raw.connect(new java.net.InetSocketAddress(ip, 443), timeout);
         raw.setSoTimeout(timeout);
@@ -83,6 +84,7 @@ public class RawWebSocket {
         SSLSocket ssl = (SSLSocket) sslFactory.createSocket(raw, domain, 443, true);
         ssl.setUseClientMode(true);
         ssl.startHandshake();
+        Log.d(TAG, "WS: TLS handshake done with " + domain);
 
         RawWebSocket ws = new RawWebSocket(ssl);
 
@@ -107,7 +109,6 @@ public class RawWebSocket {
         StringBuilder sb = new StringBuilder();
         int statusCode = 0;
         boolean firstLine = true;
-        boolean isRedirect = false;
 
         while (true) {
             String line = readLine(ws.in);
@@ -124,9 +125,10 @@ public class RawWebSocket {
             }
         }
 
+        Log.d(TAG, "WS: handshake response status=" + statusCode + " domain=" + domain);
+
         if (statusCode == 101) {
             ssl.setSoTimeout(0);
-            ws.startKeepalive();
             return ws;
         }
 
@@ -153,33 +155,6 @@ public class RawWebSocket {
         return sb.length() > 0 ? sb.toString() : null;
     }
 
-    private void startKeepalive() {
-        keepaliveThread = new Thread(() -> {
-            while (!closed) {
-                try {
-                    Thread.sleep(KEEPALIVE_INTERVAL);
-                    if (closed) break;
-                    long idle = System.currentTimeMillis() - lastActivity;
-                    if (idle >= KEEPALIVE_INTERVAL) {
-                        synchronized (out) {
-                            out.write(buildFrame(OP_PING, new byte[0], true));
-                            out.flush();
-                        }
-                        lastActivity = System.currentTimeMillis();
-                    }
-                } catch (Exception e) {
-                    if (!closed) {
-                        closed = true;
-                        closeQuiet();
-                    }
-                    break;
-                }
-            }
-        }, "ws-keepalive");
-        keepaliveThread.setDaemon(true);
-        keepaliveThread.start();
-    }
-
     public void send(byte[] data) throws IOException {
         if (closed) throw new IOException("closed");
         byte[] frame = buildFrame(OP_BINARY, data, true);
@@ -187,7 +162,6 @@ public class RawWebSocket {
             out.write(frame);
             out.flush();
         }
-        lastActivity = System.currentTimeMillis();
     }
 
     public void sendBatch(java.util.List<byte[]> parts) throws IOException {
@@ -217,6 +191,7 @@ public class RawWebSocket {
             }
 
             if (opcode == OP_CLOSE) {
+                Log.d(TAG, "WS recv: got CLOSE frame");
                 closed = true;
                 try {
                     byte[] closeData = payload.length >= 2 ? Arrays.copyOf(payload, 2) : new byte[0];
@@ -243,7 +218,6 @@ public class RawWebSocket {
             if (opcode == OP_PONG) continue;
 
             if (opcode == 0x1 || opcode == 0x2) {
-                lastActivity = System.currentTimeMillis();
                 return payload;
             }
         }
@@ -253,7 +227,6 @@ public class RawWebSocket {
     public void close() {
         if (closed) return;
         closed = true;
-        if (keepaliveThread != null) keepaliveThread.interrupt();
         try {
             synchronized (out) {
                 out.write(buildFrame(OP_CLOSE, new byte[0], true));
