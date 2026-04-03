@@ -74,44 +74,61 @@ public class RawWebSocket {
 
     // Текущая рабочая стратегия (обновляется при успехе)
     private static volatile int workingStrategy = -1;
+    // IP которые заблокированы по TLS — не тратим время на перебор
+    private static final java.util.Set<String> blockedIps = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    // Быстрый таймаут при переборе стратегий (сек)
+    private static final int PROBE_TIMEOUT = 4000;
 
     public static RawWebSocket connect(String ip, String domain, int timeout) throws Exception {
-        // Если уже нашли рабочую стратегию — используем сразу
+        // Если этот IP заблокирован по TLS — сразу exception, пусть идёт tcpFallback
+        if (blockedIps.contains(ip)) {
+            throw new IOException("IP " + ip + " blocked (TLS), using TCP fallback");
+        }
+
+        // Если уже нашли рабочую стратегию — используем с полным таймаутом
         if (workingStrategy >= 0) {
             try {
                 return connectWithStrategy(ip, domain, timeout, workingStrategy);
             } catch (Exception e) {
-                // Рабочая стратегия сломалась — сбросить и перебрать заново
-                AppLog.w(TAG, "Working strategy " + workingStrategy + " failed, retrying all");
-                workingStrategy = -1;
+                AppLog.w(TAG, "Working strategy " + workingStrategy + " failed for " + ip + ", probing...");
+                // Не сбрасываем workingStrategy — может этот конкретный IP заблокирован
             }
         }
 
-        // Перебираем стратегии: DELAY → AGGRESSIVE → без SNI → без фрагментации
+        // Пробуем только 2 самые эффективные стратегии с коротким таймаутом
         int[] strategies = {
             FragmentSocket.STRATEGY_DELAY,
-            FragmentSocket.STRATEGY_AGGRESSIVE,
-            -1,  // без SNI
-            -2,  // без фрагментации (прямое подключение)
+            -2,  // DIRECT (без фрагментации)
         };
 
         Exception lastError = null;
         for (int strategy : strategies) {
             try {
-                RawWebSocket ws = connectWithStrategy(ip, domain, timeout, strategy);
+                RawWebSocket ws = connectWithStrategy(ip, domain, PROBE_TIMEOUT, strategy);
                 workingStrategy = strategy;
                 String name = strategyName(strategy);
-                AppLog.i(TAG, "Strategy '" + name + "' WORKS! Saving for future connections");
+                AppLog.i(TAG, "Strategy '" + name + "' WORKS for " + ip + "!");
                 return ws;
             } catch (WsRedirectException e) {
-                throw e; // Redirect — не пробуем другие стратегии
+                throw e;
             } catch (Exception e) {
                 String name = strategyName(strategy);
-                AppLog.w(TAG, "Strategy '" + name + "' failed: " + e.getMessage());
+                AppLog.w(TAG, "Strategy '" + name + "' failed for " + ip + ": " + e.getMessage());
                 lastError = e;
             }
         }
-        throw lastError != null ? lastError : new IOException("All strategies failed");
+
+        // Все стратегии провалились — запомнить IP как заблокированный
+        blockedIps.add(ip);
+        AppLog.w(TAG, "IP " + ip + " marked as TLS-blocked, will use TCP fallback");
+        throw lastError != null ? lastError : new IOException("All strategies failed for " + ip);
+    }
+
+    /** Сбросить кэш заблокированных IP (например при смене сети) */
+    public static void resetBlockedIps() {
+        blockedIps.clear();
+        workingStrategy = -1;
+        AppLog.i(TAG, "Blocked IPs cache cleared");
     }
 
     private static String strategyName(int s) {
