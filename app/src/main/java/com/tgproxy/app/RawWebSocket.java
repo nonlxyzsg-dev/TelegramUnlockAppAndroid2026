@@ -80,6 +80,11 @@ public class RawWebSocket {
     // IP которые заблокированы по TLS — не тратим время на перебор
     private static final java.util.Set<String> blockedIps = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
+    // Стратегии работы с SNI (не TCP-фрагментация, а изменение содержимого TLS)
+    private static final int SNI_NORMAL = 0;   // Настоящий SNI (kws*.web.telegram.org)
+    private static final int SNI_NONE = 1;     // Без SNI вообще
+    private static final int SNI_FAKE = 2;     // Фейковый SNI (www.google.com)
+
     // === Upstream proxy (внешний прокси для обхода IP-блокировки) ===
     public static final int PROXY_NONE = 0;
     public static final int PROXY_HTTP = 1;    // HTTP CONNECT
