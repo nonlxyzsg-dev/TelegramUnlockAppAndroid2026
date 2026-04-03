@@ -10,8 +10,11 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.security.SecureRandom;
 import java.util.Arrays;
+import java.util.Collections;
 
+import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
@@ -76,8 +79,21 @@ public class RawWebSocket {
     private static volatile int workingStrategy = -1;
     // IP которые заблокированы по TLS — не тратим время на перебор
     private static final java.util.Set<String> blockedIps = java.util.concurrent.ConcurrentHashMap.newKeySet();
-    // Таймаут при переборе стратегий (мс). MOBILE стратегия ~3.5с + handshake
-    private static final int PROBE_TIMEOUT = 8000;
+    // Стратегии работы с SNI (не TCP-фрагментация, а изменение содержимого TLS)
+    private static final int SNI_NORMAL = 0;   // Настоящий SNI (kws*.web.telegram.org)
+    private static final int SNI_NONE = 1;     // Без SNI вообще
+    private static final int SNI_FAKE = 2;     // Фейковый SNI (www.google.com)
+
+    // Таймаут при переборе стратегий (мс)
+    private static final int PROBE_TIMEOUT = 10000;
+
+    // Фейковые SNI домены для маскировки
+    private static final String[] FAKE_SNI_DOMAINS = {
+        "www.google.com",
+        "www.microsoft.com",
+        "cdn.jsdelivr.net",
+        "ajax.googleapis.com",
+    };
 
     public static RawWebSocket connect(String ip, String domain, int timeout) throws Exception {
         // Если этот IP заблокирован по TLS — сразу exception, пусть идёт tcpFallback
@@ -86,35 +102,49 @@ public class RawWebSocket {
         }
 
         // Если уже нашли рабочую стратегию — используем с полным таймаутом
+        // Кодировка: sniMode * 100 + (fragStrategy + 10)
         if (workingStrategy >= 0) {
+            int cachedSni = workingStrategy / 100;
+            int cachedFrag = (workingStrategy % 100) - 10;
             try {
-                return connectWithStrategy(ip, domain, timeout, workingStrategy);
+                return connectWithStrategy(ip, domain, timeout, cachedFrag, cachedSni);
             } catch (Exception e) {
-                AppLog.w(TAG, "Working strategy " + workingStrategy + " failed for " + ip + ", probing...");
-                // Не сбрасываем workingStrategy — может этот конкретный IP заблокирован
+                AppLog.w(TAG, "Cached strategy failed for " + ip + ", probing...");
+                workingStrategy = -1; // Сбрасываем — возможно сменилась сеть
             }
         }
 
-        // Перебираем стратегии: DELAY (WiFi) → MOBILE (мобильная сеть) → DIRECT
-        int[] strategies = {
-            FragmentSocket.STRATEGY_DELAY,
-            FragmentSocket.STRATEGY_MOBILE,
-            -2,  // DIRECT (без фрагментации)
+        // Порядок перебора:
+        // 1. NO_SNI — убрать SNI из ClientHello (ТСПУ нечего искать)
+        // 2. FAKE_SNI + DELAY — подмена SNI на google.com + фрагментация
+        // 3. DELAY — только фрагментация с задержкой (работает на WiFi)
+        // 4. MOBILE — длинные паузы для медленного DPI
+        // 5. DIRECT — без обхода
+
+        int[][] strategies = {
+            {SNI_NONE,   -2},                              // NO_SNI + без фрагментации
+            {SNI_FAKE,   FragmentSocket.STRATEGY_DELAY},   // FAKE_SNI + фрагментация
+            {SNI_FAKE,   -2},                              // FAKE_SNI + без фрагментации
+            {SNI_NORMAL, FragmentSocket.STRATEGY_DELAY},   // Обычный SNI + фрагментация
+            {SNI_NORMAL, FragmentSocket.STRATEGY_MOBILE},  // Обычный SNI + длинные паузы
+            {SNI_NORMAL, -2},                              // DIRECT
         };
 
         Exception lastError = null;
-        for (int strategy : strategies) {
+        for (int[] combo : strategies) {
+            int sniMode = combo[0];
+            int fragStrategy = combo[1];
+            String desc = sniModeName(sniMode) + "+" + strategyName(fragStrategy);
             try {
-                RawWebSocket ws = connectWithStrategy(ip, domain, PROBE_TIMEOUT, strategy);
-                workingStrategy = strategy;
-                String name = strategyName(strategy);
-                AppLog.i(TAG, "Strategy '" + name + "' WORKS for " + ip + "!");
+                RawWebSocket ws = connectWithStrategy(ip, domain, PROBE_TIMEOUT, fragStrategy, sniMode);
+                // Кодируем рабочую стратегию: sniMode * 100 + (fragStrategy + 10)
+                workingStrategy = sniMode * 100 + (fragStrategy + 10);
+                AppLog.i(TAG, "Strategy '" + desc + "' WORKS for " + ip + "!");
                 return ws;
             } catch (WsRedirectException e) {
                 throw e;
             } catch (Exception e) {
-                String name = strategyName(strategy);
-                AppLog.w(TAG, "Strategy '" + name + "' failed for " + ip + ": " + e.getMessage());
+                AppLog.w(TAG, "Strategy '" + desc + "' failed for " + ip + ": " + e.getMessage());
                 lastError = e;
             }
         }
@@ -138,15 +168,24 @@ public class RawWebSocket {
             case FragmentSocket.STRATEGY_AGGRESSIVE: return "AGGRESSIVE";
             case FragmentSocket.STRATEGY_SIMPLE: return "SIMPLE";
             case FragmentSocket.STRATEGY_MOBILE: return "MOBILE";
-            case -1: return "NO_SNI";
             case -2: return "DIRECT";
-            default: return "UNKNOWN";
+            default: return "FRAG_" + s;
         }
     }
 
-    private static RawWebSocket connectWithStrategy(String ip, String domain, int timeout, int strategy) throws Exception {
-        String name = strategyName(strategy);
-        AppLog.d(TAG, "WS: trying " + ip + ":443 domain=" + domain + " strategy=" + name);
+    private static String sniModeName(int m) {
+        switch (m) {
+            case SNI_NORMAL: return "SNI";
+            case SNI_NONE: return "NO_SNI";
+            case SNI_FAKE: return "FAKE_SNI";
+            default: return "SNI_" + m;
+        }
+    }
+
+    /** Обратный вызов для кэшированной стратегии */
+    private static RawWebSocket connectWithStrategy(String ip, String domain, int timeout, int fragStrategy, int sniMode) throws Exception {
+        String desc = sniModeName(sniMode) + "+" + strategyName(fragStrategy);
+        AppLog.d(TAG, "WS: trying " + ip + ":443 domain=" + domain + " strategy=" + desc);
 
         Socket raw = new Socket();
         raw.connect(new java.net.InetSocketAddress(ip, 443), timeout);
@@ -155,28 +194,61 @@ public class RawWebSocket {
         raw.setReceiveBufferSize(262144);
         raw.setSendBufferSize(262144);
 
+        // Определяем hostname для TLS SNI
+        String tlsHost;
+        switch (sniMode) {
+            case SNI_NONE:
+                // Передаём IP вместо hostname — Java SSLSocket не добавит SNI extension
+                tlsHost = ip;
+                break;
+            case SNI_FAKE:
+                // Фейковый SNI — DPI видит google.com, а не telegram
+                tlsHost = FAKE_SNI_DOMAINS[rng.nextInt(FAKE_SNI_DOMAINS.length)];
+                break;
+            default:
+                // Настоящий SNI
+                tlsHost = domain;
+                break;
+        }
+
         SSLSocket ssl;
-        if (strategy == -2) {
+        if (fragStrategy == -2) {
             // Прямое подключение без фрагментации
-            ssl = (SSLSocket) sslFactory.createSocket(raw, domain, 443, true);
-        } else if (strategy == -1) {
-            // Без SNI — domain передаём как IP, а не как hostname
-            // DPI не увидит SNI в ClientHello
-            Socket fragmented = new FragmentSocket(raw, FragmentSocket.STRATEGY_DELAY);
-            ssl = (SSLSocket) sslFactory.createSocket(fragmented, ip, 443, true);
+            ssl = (SSLSocket) sslFactory.createSocket(raw, tlsHost, 443, true);
         } else {
             // Фрагментация с выбранной стратегией
-            Socket fragmented = new FragmentSocket(raw, strategy);
-            ssl = (SSLSocket) sslFactory.createSocket(fragmented, domain, 443, true);
+            Socket fragmented = new FragmentSocket(raw, fragStrategy);
+            ssl = (SSLSocket) sslFactory.createSocket(fragmented, tlsHost, 443, true);
         }
 
         ssl.setUseClientMode(true);
 
+        // Для NO_SNI: явно очищаем список SNI на случай если Java всё равно добавит
+        if (sniMode == SNI_NONE) {
+            try {
+                SSLParameters params = ssl.getSSLParameters();
+                params.setServerNames(Collections.emptyList());
+                ssl.setSSLParameters(params);
+                AppLog.d(TAG, "SNI removed from ClientHello");
+            } catch (Exception e) {
+                AppLog.w(TAG, "Failed to remove SNI: " + e.getMessage());
+            }
+        }
+
+        // Для FAKE_SNI: явно устанавливаем фейковый домен
+        if (sniMode == SNI_FAKE) {
+            try {
+                SSLParameters params = ssl.getSSLParameters();
+                params.setServerNames(Collections.singletonList(new SNIHostName(tlsHost)));
+                ssl.setSSLParameters(params);
+                AppLog.d(TAG, "SNI set to fake: " + tlsHost);
+            } catch (Exception e) {
+                AppLog.w(TAG, "Failed to set fake SNI: " + e.getMessage());
+            }
+        }
+
         // Маскировка TLS fingerprint под браузер Chrome
-        // DPI может блокировать не по SNI, а по JA3 fingerprint (набор cipher suites, extensions)
-        // Java SSLSocket имеет уникальный fingerprint, отличный от браузера
         try {
-            // Предпочитаем TLS 1.3 (как Chrome) — другой формат ClientHello
             String[] protocols = ssl.getSupportedProtocols();
             java.util.List<String> preferred = new java.util.ArrayList<>();
             for (String p : protocols) {
@@ -187,10 +259,8 @@ public class RawWebSocket {
                 ssl.setEnabledProtocols(preferred.toArray(new String[0]));
             }
 
-            // Cipher suites как у Chrome (современные, AEAD)
             String[] supportedCiphers = ssl.getSupportedCipherSuites();
             java.util.List<String> chromeLike = new java.util.ArrayList<>();
-            // TLS 1.3 ciphers (Chrome порядок)
             String[] chromeOrder = {
                 "TLS_AES_128_GCM_SHA256",
                 "TLS_AES_256_GCM_SHA384",
@@ -210,10 +280,15 @@ public class RawWebSocket {
                 ssl.setEnabledCipherSuites(chromeLike.toArray(new String[0]));
             }
 
-            // ALPN — как браузер (h2, http/1.1)
+            // ALPN
             if (android.os.Build.VERSION.SDK_INT >= 29) {
-                javax.net.ssl.SSLParameters params = ssl.getSSLParameters();
+                SSLParameters params = ssl.getSSLParameters();
+                // Сохраняем уже установленный SNI
+                java.util.List<javax.net.ssl.SNIServerName> existingSni = params.getServerNames();
                 params.setApplicationProtocols(new String[]{"h2", "http/1.1"});
+                if (existingSni != null) {
+                    params.setServerNames(existingSni);
+                }
                 ssl.setSSLParameters(params);
             }
         } catch (Exception e) {
@@ -221,7 +296,7 @@ public class RawWebSocket {
         }
 
         ssl.startHandshake();
-        AppLog.d(TAG, "WS: TLS handshake OK via " + name
+        AppLog.d(TAG, "WS: TLS handshake OK via " + desc
                 + " proto=" + ssl.getSession().getProtocol()
                 + " cipher=" + ssl.getSession().getCipherSuite());
 
@@ -231,6 +306,7 @@ public class RawWebSocket {
         rng.nextBytes(keyBytes);
         String wsKey = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP);
 
+        // Host header — всегда настоящий домен (DPI не может прочитать HTTP внутри TLS)
         String req = "GET /apiws HTTP/1.1\r\n" +
                 "Host: " + domain + "\r\n" +
                 "Upgrade: websocket\r\n" +
@@ -245,7 +321,6 @@ public class RawWebSocket {
         ws.out.write(req.getBytes("UTF-8"));
         ws.out.flush();
 
-        StringBuilder sb = new StringBuilder();
         int statusCode = 0;
         boolean firstLine = true;
 
@@ -264,7 +339,7 @@ public class RawWebSocket {
             }
         }
 
-        AppLog.d(TAG, "WS: handshake response status=" + statusCode + " domain=" + domain);
+        AppLog.d(TAG, "WS: handshake response status=" + statusCode + " domain=" + domain + " via " + desc);
 
         if (statusCode == 101) {
             ssl.setSoTimeout(0);
@@ -276,7 +351,7 @@ public class RawWebSocket {
                 || statusCode == 307 || statusCode == 308) {
             throw new WsRedirectException(statusCode);
         }
-        throw new IOException("WS handshake failed: " + statusCode);
+        throw new IOException("WS handshake failed: " + statusCode + " via " + desc);
     }
 
     private static String readLine(InputStream in) throws IOException {
