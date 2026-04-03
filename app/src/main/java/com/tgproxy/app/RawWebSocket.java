@@ -72,8 +72,63 @@ public class RawWebSocket {
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
     };
 
+    // Текущая рабочая стратегия (обновляется при успехе)
+    private static volatile int workingStrategy = -1;
+
     public static RawWebSocket connect(String ip, String domain, int timeout) throws Exception {
-        AppLog.d(TAG, "WS: connecting to " + ip + ":443 domain=" + domain + " timeout=" + timeout);
+        // Если уже нашли рабочую стратегию — используем сразу
+        if (workingStrategy >= 0) {
+            try {
+                return connectWithStrategy(ip, domain, timeout, workingStrategy);
+            } catch (Exception e) {
+                // Рабочая стратегия сломалась — сбросить и перебрать заново
+                AppLog.w(TAG, "Working strategy " + workingStrategy + " failed, retrying all");
+                workingStrategy = -1;
+            }
+        }
+
+        // Перебираем стратегии: DELAY → AGGRESSIVE → без SNI → без фрагментации
+        int[] strategies = {
+            FragmentSocket.STRATEGY_DELAY,
+            FragmentSocket.STRATEGY_AGGRESSIVE,
+            -1,  // без SNI
+            -2,  // без фрагментации (прямое подключение)
+        };
+
+        Exception lastError = null;
+        for (int strategy : strategies) {
+            try {
+                RawWebSocket ws = connectWithStrategy(ip, domain, timeout, strategy);
+                workingStrategy = strategy;
+                String name = strategyName(strategy);
+                AppLog.i(TAG, "Strategy '" + name + "' WORKS! Saving for future connections");
+                return ws;
+            } catch (WsRedirectException e) {
+                throw e; // Redirect — не пробуем другие стратегии
+            } catch (Exception e) {
+                String name = strategyName(strategy);
+                AppLog.w(TAG, "Strategy '" + name + "' failed: " + e.getMessage());
+                lastError = e;
+            }
+        }
+        throw lastError != null ? lastError : new IOException("All strategies failed");
+    }
+
+    private static String strategyName(int s) {
+        switch (s) {
+            case FragmentSocket.STRATEGY_DELAY: return "DELAY";
+            case FragmentSocket.STRATEGY_AGGRESSIVE: return "AGGRESSIVE";
+            case FragmentSocket.STRATEGY_SIMPLE: return "SIMPLE";
+            case -1: return "NO_SNI";
+            case -2: return "DIRECT";
+            default: return "UNKNOWN";
+        }
+    }
+
+    private static RawWebSocket connectWithStrategy(String ip, String domain, int timeout, int strategy) throws Exception {
+        String name = strategyName(strategy);
+        AppLog.d(TAG, "WS: trying " + ip + ":443 domain=" + domain + " strategy=" + name);
+
         Socket raw = new Socket();
         raw.connect(new java.net.InetSocketAddress(ip, 443), timeout);
         raw.setSoTimeout(timeout);
@@ -81,13 +136,24 @@ public class RawWebSocket {
         raw.setReceiveBufferSize(262144);
         raw.setSendBufferSize(262144);
 
-        // TLS-фрагментация: разбиваем ClientHello на мелкие TCP-сегменты
-        // чтобы DPI не мог прочитать SNI (имя домена) из одного пакета
-        Socket fragmented = new FragmentSocket(raw, 1, 40);
-        SSLSocket ssl = (SSLSocket) sslFactory.createSocket(fragmented, domain, 443, true);
+        SSLSocket ssl;
+        if (strategy == -2) {
+            // Прямое подключение без фрагментации
+            ssl = (SSLSocket) sslFactory.createSocket(raw, domain, 443, true);
+        } else if (strategy == -1) {
+            // Без SNI — domain передаём как IP, а не как hostname
+            // DPI не увидит SNI в ClientHello
+            Socket fragmented = new FragmentSocket(raw, FragmentSocket.STRATEGY_DELAY);
+            ssl = (SSLSocket) sslFactory.createSocket(fragmented, ip, 443, true);
+        } else {
+            // Фрагментация с выбранной стратегией
+            Socket fragmented = new FragmentSocket(raw, strategy);
+            ssl = (SSLSocket) sslFactory.createSocket(fragmented, domain, 443, true);
+        }
+
         ssl.setUseClientMode(true);
         ssl.startHandshake();
-        AppLog.d(TAG, "WS: TLS handshake done with " + domain);
+        AppLog.d(TAG, "WS: TLS handshake OK via " + name);
 
         RawWebSocket ws = new RawWebSocket(ssl);
 

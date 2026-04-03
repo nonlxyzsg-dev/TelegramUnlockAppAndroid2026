@@ -11,27 +11,27 @@ import java.net.SocketException;
 /**
  * Обёртка над Socket для TLS-фрагментации ClientHello.
  *
- * DPI анализирует SNI в TLS ClientHello. Если ClientHello отправлен
- * одним TCP-сегментом — DPI его читает и блокирует.
+ * DPI анализирует SNI в TLS ClientHello. FragmentSocket перехватывает
+ * первый write (ClientHello) и разбивает его на мелкие TCP-сегменты
+ * с задержками, чтобы DPI не смог собрать SNI.
  *
- * FragmentSocket перехватывает первый write (ClientHello) и разбивает
- * его на мелкие TCP-сегменты. DPI не может собрать SNI из фрагментов.
- *
- * После handshake все данные проходят без изменений.
+ * Стратегии:
+ * - DELAY: фрагментация + задержка 200мс после первого фрагмента (против DPI с TCP reassembly)
+ * - AGGRESSIVE: побайтовая отправка SNI-области + задержки
+ * - SIMPLE: быстрая фрагментация без задержек (для слабого DPI)
  */
 public class FragmentSocket extends Socket {
+
+    public static final int STRATEGY_DELAY = 0;      // С задержкой (по умолчанию)
+    public static final int STRATEGY_AGGRESSIVE = 1;  // Побайтовая + задержки
+    public static final int STRATEGY_SIMPLE = 2;      // Без задержек
 
     private final Socket delegate;
     private final FragmentOutputStream fragOut;
 
-    /**
-     * @param delegate реальный подключённый сокет (TCP_NODELAY должен быть true)
-     * @param firstChunkSize размер первого фрагмента (обычно 1-5 байт)
-     * @param chunkSize размер последующих фрагментов (обычно 40-50 байт)
-     */
-    public FragmentSocket(Socket delegate, int firstChunkSize, int chunkSize) throws IOException {
+    public FragmentSocket(Socket delegate, int strategy) throws IOException {
         this.delegate = delegate;
-        this.fragOut = new FragmentOutputStream(delegate.getOutputStream(), firstChunkSize, chunkSize);
+        this.fragOut = new FragmentOutputStream(delegate.getOutputStream(), strategy);
     }
 
     @Override
@@ -68,20 +68,14 @@ public class FragmentSocket extends Socket {
     @Override public int getSendBufferSize() throws SocketException { return delegate.getSendBufferSize(); }
     @Override public int getReceiveBufferSize() throws SocketException { return delegate.getReceiveBufferSize(); }
 
-    /**
-     * OutputStream который разбивает первый write на мелкие фрагменты.
-     * TCP_NODELAY=true гарантирует что каждый write+flush = отдельный TCP-сегмент.
-     */
     private static class FragmentOutputStream extends OutputStream {
         private final OutputStream delegate;
-        private final int firstChunkSize;
-        private final int chunkSize;
+        private final int strategy;
         private volatile boolean firstWriteDone = false;
 
-        FragmentOutputStream(OutputStream delegate, int firstChunkSize, int chunkSize) {
+        FragmentOutputStream(OutputStream delegate, int strategy) {
             this.delegate = delegate;
-            this.firstChunkSize = firstChunkSize;
-            this.chunkSize = chunkSize;
+            this.strategy = strategy;
         }
 
         @Override
@@ -94,31 +88,107 @@ public class FragmentSocket extends Socket {
         public void write(byte[] b, int off, int len) throws IOException {
             if (!firstWriteDone) {
                 firstWriteDone = true;
-                AppLog.d("TGProxy", "TLS fragment: splitting " + len + " bytes (first=" + firstChunkSize + " chunk=" + chunkSize + ")");
 
-                int pos = off;
-                int end = off + len;
+                switch (strategy) {
+                    case STRATEGY_AGGRESSIVE:
+                        fragmentAggressive(b, off, len);
+                        break;
+                    case STRATEGY_SIMPLE:
+                        fragmentSimple(b, off, len);
+                        break;
+                    default:
+                        fragmentWithDelay(b, off, len);
+                        break;
+                }
+            } else {
+                delegate.write(b, off, len);
+            }
+        }
 
-                // Первый крошечный фрагмент — разбивает TLS record header
-                int chunk = Math.min(firstChunkSize, end - pos);
+        /**
+         * Стратегия DELAY: отправить 1 байт, пауза 200мс, затем куски по 40 байт.
+         * Пауза заставляет DPI сбросить буфер TCP reassembly.
+         */
+        private void fragmentWithDelay(byte[] b, int off, int len) throws IOException {
+            AppLog.d("TGProxy", "TLS frag DELAY: " + len + " bytes");
+            int pos = off;
+            int end = off + len;
+
+            // Первый байт
+            delegate.write(b, pos, 1);
+            delegate.flush();
+            pos++;
+
+            // Пауза — DPI reassembly timeout
+            sleep(200);
+
+            // Остальное кусками по 50 байт
+            while (pos < end) {
+                int chunk = Math.min(50, end - pos);
                 delegate.write(b, pos, chunk);
                 delegate.flush();
                 pos += chunk;
-
-                // Остальные данные мелкими кусками — SNI размазывается по сегментам
-                while (pos < end) {
-                    chunk = Math.min(chunkSize, end - pos);
-                    delegate.write(b, pos, chunk);
-                    delegate.flush();
-                    pos += chunk;
-                }
-
-                int segments = 1 + (int) Math.ceil((double)(len - firstChunkSize) / chunkSize);
-                AppLog.d("TGProxy", "TLS fragment: sent " + len + " bytes in ~" + segments + " TCP segments");
-            } else {
-                // После handshake — без фрагментации
-                delegate.write(b, off, len);
             }
+            AppLog.d("TGProxy", "TLS frag DELAY: done");
+        }
+
+        /**
+         * Стратегия AGGRESSIVE: побайтовая отправка первых 10 байт + паузы.
+         * Для сильного DPI (ТСПУ) с большим буфером reassembly.
+         */
+        private void fragmentAggressive(byte[] b, int off, int len) throws IOException {
+            AppLog.d("TGProxy", "TLS frag AGGRESSIVE: " + len + " bytes");
+            int pos = off;
+            int end = off + len;
+
+            // Первые 6 байт (TLS record header + handshake type) побайтово с паузами
+            int headerBytes = Math.min(6, end - pos);
+            for (int i = 0; i < headerBytes; i++) {
+                delegate.write(b, pos, 1);
+                delegate.flush();
+                pos++;
+                if (i == 0) sleep(200);  // После первого байта — длинная пауза
+                else sleep(50);           // Между остальными — короткие
+            }
+
+            sleep(200); // Ещё пауза перед основными данными
+
+            // Остальное кусками по 30 байт с микропаузами
+            while (pos < end) {
+                int chunk = Math.min(30, end - pos);
+                delegate.write(b, pos, chunk);
+                delegate.flush();
+                pos += chunk;
+                if (pos < end) sleep(10);
+            }
+            AppLog.d("TGProxy", "TLS frag AGGRESSIVE: done");
+        }
+
+        /**
+         * Стратегия SIMPLE: быстрая фрагментация без задержек.
+         * Для слабого DPI который не делает TCP reassembly.
+         */
+        private void fragmentSimple(byte[] b, int off, int len) throws IOException {
+            AppLog.d("TGProxy", "TLS frag SIMPLE: " + len + " bytes");
+            int pos = off;
+            int end = off + len;
+
+            // 1 байт, потом по 40
+            delegate.write(b, pos, 1);
+            delegate.flush();
+            pos++;
+
+            while (pos < end) {
+                int chunk = Math.min(40, end - pos);
+                delegate.write(b, pos, chunk);
+                delegate.flush();
+                pos += chunk;
+            }
+            AppLog.d("TGProxy", "TLS frag SIMPLE: done");
+        }
+
+        private void sleep(int ms) {
+            try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
         }
 
         @Override
