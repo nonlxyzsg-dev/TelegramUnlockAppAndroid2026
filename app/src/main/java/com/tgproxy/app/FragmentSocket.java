@@ -22,9 +22,10 @@ import java.net.SocketException;
  */
 public class FragmentSocket extends Socket {
 
-    public static final int STRATEGY_DELAY = 0;      // С задержкой (по умолчанию)
+    public static final int STRATEGY_DELAY = 0;      // С задержкой 200мс (для домашнего DPI)
     public static final int STRATEGY_AGGRESSIVE = 1;  // Побайтовая + задержки
     public static final int STRATEGY_SIMPLE = 2;      // Без задержек
+    public static final int STRATEGY_MOBILE = 3;      // Для мобильного DPI (ТСПУ) — длинные паузы
 
     private final Socket delegate;
     private final FragmentOutputStream fragOut;
@@ -96,6 +97,9 @@ public class FragmentSocket extends Socket {
                     case STRATEGY_SIMPLE:
                         fragmentSimple(b, off, len);
                         break;
+                    case STRATEGY_MOBILE:
+                        fragmentMobile(b, off, len);
+                        break;
                     default:
                         fragmentWithDelay(b, off, len);
                         break;
@@ -162,6 +166,42 @@ public class FragmentSocket extends Socket {
                 if (pos < end) sleep(10);
             }
             AppLog.d("TGProxy", "TLS frag AGGRESSIVE: done");
+        }
+
+        /**
+         * Стратегия MOBILE: для мобильного DPI (ТСПУ).
+         * ТСПУ имеет таймаут TCP reassembly ~1-3с.
+         * Отправляем первый байт, ждём 2 секунды чтобы ТСПУ сбросил буфер,
+         * затем остальное одним куском.
+         */
+        private void fragmentMobile(byte[] b, int off, int len) throws IOException {
+            AppLog.d("TGProxy", "TLS frag MOBILE: " + len + " bytes");
+            int pos = off;
+            int end = off + len;
+
+            // Первый байт (0x16 — TLS handshake type)
+            delegate.write(b, pos, 1);
+            delegate.flush();
+            pos++;
+
+            // Длинная пауза — ТСПУ сбрасывает буфер reassembly
+            sleep(2000);
+
+            // Следующие 5 байт (TLS version + length + handshake type + length)
+            int headerChunk = Math.min(5, end - pos);
+            delegate.write(b, pos, headerChunk);
+            delegate.flush();
+            pos += headerChunk;
+
+            // Ещё пауза
+            sleep(1500);
+
+            // Остальное можно отправить целиком
+            if (pos < end) {
+                delegate.write(b, pos, end - pos);
+                delegate.flush();
+            }
+            AppLog.d("TGProxy", "TLS frag MOBILE: done (3 segments, 3.5s total delay)");
         }
 
         /**

@@ -76,8 +76,8 @@ public class RawWebSocket {
     private static volatile int workingStrategy = -1;
     // IP которые заблокированы по TLS — не тратим время на перебор
     private static final java.util.Set<String> blockedIps = java.util.concurrent.ConcurrentHashMap.newKeySet();
-    // Быстрый таймаут при переборе стратегий (сек)
-    private static final int PROBE_TIMEOUT = 4000;
+    // Таймаут при переборе стратегий (мс). MOBILE стратегия ~3.5с + handshake
+    private static final int PROBE_TIMEOUT = 8000;
 
     public static RawWebSocket connect(String ip, String domain, int timeout) throws Exception {
         // Если этот IP заблокирован по TLS — сразу exception, пусть идёт tcpFallback
@@ -95,9 +95,10 @@ public class RawWebSocket {
             }
         }
 
-        // Пробуем только 2 самые эффективные стратегии с коротким таймаутом
+        // Перебираем стратегии: DELAY (WiFi) → MOBILE (мобильная сеть) → DIRECT
         int[] strategies = {
             FragmentSocket.STRATEGY_DELAY,
+            FragmentSocket.STRATEGY_MOBILE,
             -2,  // DIRECT (без фрагментации)
         };
 
@@ -136,6 +137,7 @@ public class RawWebSocket {
             case FragmentSocket.STRATEGY_DELAY: return "DELAY";
             case FragmentSocket.STRATEGY_AGGRESSIVE: return "AGGRESSIVE";
             case FragmentSocket.STRATEGY_SIMPLE: return "SIMPLE";
+            case FragmentSocket.STRATEGY_MOBILE: return "MOBILE";
             case -1: return "NO_SNI";
             case -2: return "DIRECT";
             default: return "UNKNOWN";
